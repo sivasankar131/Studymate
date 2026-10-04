@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: studymate-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false          # set manually in Render dashboard
+      - key: DATABASE_URL
+        sync: false
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: QDRANT_COLLECTION
+        value: studymate
+      - key: FRONTEND_URL
+        sync: false          # set to your Netlify URL
+      - key: LLM_MODEL
+        value: openai/gpt-oss-120b
+      - key: MAX_UPLOAD_MB
+        value: "10"
