@@ -1,15 +1,36 @@
+# ── Web framework ─────────────────────────────────────────────────────────────
 fastapi>=0.115
 uvicorn[standard]>=0.30
 python-multipart>=0.0.9
+
+# ── Settings / validation ──────────────────────────────────────────────────────
 pydantic-settings>=2.4
+
+# ── Database ───────────────────────────────────────────────────────────────────
 sqlalchemy>=2.0
 pg8000>=1.31
+
+# ── Document parsing ───────────────────────────────────────────────────────────
 pypdf>=4.3
-qdrant-client>=1.12
+
+# ── LangChain core + integrations ─────────────────────────────────────────────
 langchain>=0.3
 langchain-core>=0.3
 langchain-text-splitters>=0.3
-langchain-google-genai>=2.0
+langchain-groq>=0.2
+langchain-huggingface>=0.1
 langchain-qdrant>=0.2
+
+# ── LangGraph (agent) ─────────────────────────────────────────────────────────
 langgraph>=0.2
+
+# ── Embeddings (HuggingFace) ───────────────────────────────────────────────────
+sentence-transformers>=3.0
+torch>=2.0
+huggingface-hub>=0.24
+
+# ── Vector database ────────────────────────────────────────────────────────────
+qdrant-client>=1.12
+
+# ── Web search tool ────────────────────────────────────────────────────────────
 ddgs>=9.0
