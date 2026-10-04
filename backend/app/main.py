@@ -18,11 +18,21 @@ log = logging.getLogger("studymate")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    init_db()  # fail fast if the database is unreachable
+    try:
+        init_db()
+        log.info("Database initialized successfully.")
+    except Exception:
+        log.exception("Database initialization failed; API will still start.")
+
     try:
         ensure_collection()
+        log.info("Qdrant collection ready.")
     except Exception:
-        log.exception("Could not prepare the Qdrant collection at startup; it will be retried on first use.")
+        log.exception(
+            "Could not prepare the Qdrant collection at startup; "
+            "it will be retried on first use."
+        )
+
     yield
 
 

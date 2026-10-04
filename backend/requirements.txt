@@ -34,3 +34,39 @@ qdrant-client>=1.12
 
 # ── Web search tool ────────────────────────────────────────────────────────────
 ddgs>=9.0
+
+
+fastapi
+uvicorn
+langchain
+langchain-core
+langchain-groq
+langchain-huggingface
+langchain-qdrant
+langchain-text-splitters
+qdrant-client
+sentence-transformers
+pypdf
+sqlalchemy
+pg8000
+pydantic-settings
+
+
+@"
+fastapi
+uvicorn[standard]
+langchain
+langchain-core
+langchain-groq
+langchain-huggingface
+langchain-qdrant
+langchain-text-splitters
+langgraph
+qdrant-client
+sentence-transformers
+pypdf
+sqlalchemy
+pg8000
+pydantic-settings
+python-multipart
+"@ | Set-Content requirements.txt
