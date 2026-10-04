@@ -52,7 +52,6 @@ pg8000
 pydantic-settings
 
 
-@"
 fastapi
 uvicorn[standard]
 langchain
@@ -69,4 +68,3 @@ sqlalchemy
 pg8000
 pydantic-settings
 python-multipart
-"@ | Set-Content requirements.txt
