@@ -9,26 +9,29 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
-        extra="ignore"
+        extra="ignore",
     )
 
-    # --- secrets (required) ---
+    # ── Secrets (required) ────────────────────────────────────────────────────
     GROQ_API_KEY: str
     DATABASE_URL: str
     QDRANT_URL: str
     QDRANT_API_KEY: str
 
-    # --- models ---
+    # ── Models ────────────────────────────────────────────────────────────────
     LLM_MODEL: str = "openai/gpt-oss-120b"
     EMBEDDING_MODEL: str = "BAAI/bge-small-en-v1.5"
 
-    # --- RAG tuning ---
+    # ── RAG tuning ────────────────────────────────────────────────────────────
     QDRANT_COLLECTION: str = "studymate"
     CHUNK_SIZE: int = 700
     CHUNK_OVERLAP: int = 100
     TOP_K: int = 5
 
-    # --- API behaviour ---
+    # ── API behaviour ─────────────────────────────────────────────────────────
+    # FRONTEND_URL accepts a comma-separated list of origins for multi-env support.
+    # Example: "https://ragwise.netlify.app,http://localhost:5173"
+    # On Render, set this to your production Netlify URL only.
     FRONTEND_URL: str = "http://localhost:5173"
     MAX_UPLOAD_MB: int = 10
 
@@ -38,11 +41,25 @@ class Settings(BaseSettings):
         return re.sub(
             r"^postgres(ql)?(\+\w+)?://",
             "postgresql+pg8000://",
-            v
+            v,
         )
 
     @property
     def cors_origins(self) -> list[str]:
+        """
+        Parse FRONTEND_URL into a list of allowed CORS origins.
+
+        Rules:
+          - Comma-separated values are all allowed.
+          - Trailing slashes are stripped (browsers never send them in Origin).
+          - Empty entries are ignored.
+
+        On Render, set:
+          FRONTEND_URL=https://ragwise.netlify.app
+
+        For local dev + production:
+          FRONTEND_URL=https://ragwise.netlify.app,http://localhost:5173,http://localhost:5174
+        """
         return [
             o.strip().rstrip("/")
             for o in self.FRONTEND_URL.split(",")
