@@ -3,11 +3,9 @@ services:
     name: studymate-api
     runtime: python
     rootDir: backend
-    # Install torch CPU-only wheel first (saves ~2 GB vs the default CUDA wheel),
-    # then install the rest of the project dependencies.
-    buildCommand: >
-      pip install torch --index-url https://download.pytorch.org/whl/cpu &&
-      pip install -r requirements.txt
+    # fastembed uses ONNX Runtime — no torch, no CUDA, no pre-install needed.
+    # pip install -r requirements.txt is sufficient.
+    buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: GROQ_API_KEY

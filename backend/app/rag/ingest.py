@@ -1,12 +1,25 @@
 """Ingestion: extract text → chunk → embed → store in Qdrant.
 
-Every chunk stored in Qdrant carries both client_id and doc_id in its
-metadata so that retrieval can be scoped to a single browser's data.
+Embedding backend: fastembed (ONNX Runtime)
+--------------------------------------------
+Previous implementation used torch + sentence-transformers (~400 MB RAM,
+blocks Python GIL during inference).  This caused:
+  - OOM kills on Render's 512 MB free tier
+  - Event-loop stalls because torch holds the GIL during matrix ops
+
+fastembed uses ONNX Runtime which:
+  - loads in ~100 MB (bge-small-en-v1.5 ONNX model is ~23 MB)
+  - releases the GIL during inference (ONNX C++ runtime)
+  - produces identical 384-dim vectors for the same model
+  - requires NO torch, NO CUDA, NO GPU
+
+langchain-qdrant has native FastEmbedEmbeddings support so the
+retrieval path (similarity_search) works without any extra changes.
 
 Singleton design:
-  - get_embeddings()  loaded once via @lru_cache, never at startup
-  - get_client()      one Qdrant connection per process
-  - ensure_collection() idempotent, uses hardcoded dim (384) — no model probe
+  - get_embeddings() — @lru_cache, lazy, loaded once per process
+  - get_client()     — @lru_cache, one Qdrant connection per process
+  - ensure_collection() — idempotent, safe to call at startup (no model load)
 """
 import io
 import logging
@@ -35,9 +48,8 @@ log = logging.getLogger(__name__)
 
 TXT_PAGE_CHARS = 3000
 BATCH_SIZE     = 32
-BGE_SMALL_DIM  = 384  # BAAI/bge-small-en-v1.5 — constant, avoids model probe at startup
+BGE_SMALL_DIM  = 384   # BAAI/bge-small-en-v1.5 — same dim for ONNX and torch
 
-# Qdrant payload field paths (langchain-qdrant stores metadata under "metadata.<key>")
 CLIENT_ID_KEY = "metadata.client_id"
 DOC_ID_KEY    = "metadata.doc_id"
 
@@ -46,23 +58,31 @@ DOC_ID_KEY    = "metadata.doc_id"
 
 @lru_cache(maxsize=1)
 def get_embeddings():
-    """Load the embedding model once per process — lazily on first use.
-    Import is deferred to avoid loading torch/sentence-transformers at startup
-    which would exhaust Render free-tier RAM (512 MB limit) before serving requests.
     """
-    # Deferred import: torch + sentence-transformers together use ~400 MB.
-    # Importing them here (not at module level) means they only load when the
-    # first document is actually uploaded, not on every cold start.
-    from langchain_huggingface import HuggingFaceEmbeddings  # noqa: PLC0415
-    log.info("[EMBED] loading model %s …", settings.EMBEDDING_MODEL)
+    Load the embedding model once per process — lazily on first use.
+
+    Uses fastembed (ONNX Runtime) instead of HuggingFaceEmbeddings (torch).
+    Memory usage: ~100 MB vs ~400 MB.  ONNX releases the GIL during inference
+    so the asyncio event loop is never blocked.  Same 384-dim output.
+    """
+    from fastembed import TextEmbedding  # noqa: PLC0415
+    from langchain_core.embeddings import Embeddings
+
+    log.info("[EMBED] loading fastembed model %s …", settings.EMBEDDING_MODEL)
     t0 = time.perf_counter()
-    emb = HuggingFaceEmbeddings(
-        model_name=settings.EMBEDDING_MODEL,
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"normalize_embeddings": True},
-    )
+    _model = TextEmbedding(model_name=settings.EMBEDDING_MODEL)
     log.info("[EMBED] model loaded in %.2fs", time.perf_counter() - t0)
-    return emb
+
+    class _FastEmbedWrapper(Embeddings):
+        """Thin LangChain-compatible wrapper around fastembed.TextEmbedding."""
+
+        def embed_documents(self, texts: list[str]) -> list[list[float]]:
+            return [v.tolist() for v in _model.embed(texts)]
+
+        def embed_query(self, text: str) -> list[float]:
+            return next(_model.embed([text])).tolist()
+
+    return _FastEmbedWrapper()
 
 
 @lru_cache(maxsize=1)
@@ -81,7 +101,7 @@ _collection_ready = False
 
 def ensure_collection() -> None:
     """Create collection + payload indexes if they don't exist.
-    Never calls get_embeddings() — safe to call at startup.
+    Safe to call at startup — never calls get_embeddings().
     """
     global _collection_ready
     if _collection_ready:
@@ -96,7 +116,6 @@ def ensure_collection() -> None:
             vectors_config=VectorParams(size=BGE_SMALL_DIM, distance=Distance.COSINE),
         )
 
-    # Payload indexes — idempotent (Qdrant ignores if already present)
     for field in (CLIENT_ID_KEY, DOC_ID_KEY):
         try:
             client.create_payload_index(
@@ -122,11 +141,6 @@ def get_store() -> QdrantVectorStore:
 # ─── Filter builders ─────────────────────────────────────────────────────────
 
 def client_filter(client_id: str, doc_id: Optional[str] = None) -> Filter:
-    """Build a Qdrant filter that restricts results to one client's data.
-
-    client_id is ALWAYS required — this is the core isolation mechanism.
-    doc_id is optional and further narrows to a single document.
-    """
     conditions = [
         FieldCondition(key=CLIENT_ID_KEY, match=MatchValue(value=client_id))
     ]
@@ -140,7 +154,6 @@ def client_filter(client_id: str, doc_id: Optional[str] = None) -> Filter:
 # ─── Text extraction ─────────────────────────────────────────────────────────
 
 def extract_pages(data: bytes, filename: str) -> list[tuple[int, str]]:
-    """Return [(page_number, text), ...] for a PDF or TXT file."""
     name = filename.lower()
     if name.endswith(".pdf"):
         try:
@@ -171,10 +184,10 @@ def extract_pages(data: bytes, filename: str) -> list[tuple[int, str]]:
     raise ValueError("Unsupported file type. Please upload a PDF or TXT file.")
 
 
-# ─── Ingestion (direct / test path) ──────────────────────────────────────────
+# ─── Ingestion (used by upload route background thread) ──────────────────────
 
 def ingest_file(data: bytes, filename: str, doc_id: str, client_id: str) -> tuple[int, int]:
-    """Extract, chunk (with client_id metadata), embed and store one file."""
+    """Extract, chunk, embed and store one file. Returns (num_pages, num_chunks)."""
     t_total = time.perf_counter()
     log.info("[INGEST] start  filename=%s  client=%s  size=%.2fKB",
              filename, client_id[:8], len(data) / 1024)
@@ -194,7 +207,7 @@ def ingest_file(data: bytes, filename: str, doc_id: str, client_id: str) -> tupl
                 chunks.append(Document(
                     page_content=piece,
                     metadata={
-                        "client_id": client_id,   # ← isolation key in every chunk
+                        "client_id": client_id,
                         "doc_id":    doc_id,
                         "source":    filename,
                         "page":      page_no,
@@ -204,10 +217,7 @@ def ingest_file(data: bytes, filename: str, doc_id: str, client_id: str) -> tupl
     log.info("[INGEST] chunking  chunks=%d  %.2fs", len(chunks), time.perf_counter() - t0)
 
     if not chunks:
-        raise ValueError(
-            "No readable text found. Scanned or image-only PDFs need OCR, "
-            "which is not supported."
-        )
+        raise ValueError("No readable text found. Scanned or image-only PDFs need OCR.")
 
     t0 = time.perf_counter()
     store = get_store()
@@ -221,11 +231,8 @@ def ingest_file(data: bytes, filename: str, doc_id: str, client_id: str) -> tupl
 
 
 def delete_document_vectors(doc_id: str, client_id: str) -> None:
-    """Remove every vector that belongs to a specific document AND client."""
     ensure_collection()
     get_client().delete(
         collection_name=settings.QDRANT_COLLECTION,
-        points_selector=FilterSelector(
-            filter=client_filter(client_id, doc_id)
-        ),
+        points_selector=FilterSelector(filter=client_filter(client_id, doc_id)),
     )

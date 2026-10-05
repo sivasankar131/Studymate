@@ -18,21 +18,17 @@ langchain>=0.3
 langchain-core>=0.3
 langchain-text-splitters>=0.3
 langchain-groq>=0.2
-langchain-huggingface>=0.1
 langchain-qdrant>=0.2
 
 # ── LangGraph (agent) ────────────────────────────────────────────────────────
 langgraph>=0.2
 
-# ── Embeddings (HuggingFace, CPU-only) ───────────────────────────────────────
-# torch is listed WITHOUT the +cu* CUDA variant so pip installs the small
-# CPU-only wheel (~200 MB) instead of the CUDA stack (~2.5 GB).
-# sentence-transformers requires torch; this keeps Render build fast.
-sentence-transformers>=3.0
-torch>=2.0
-
-# ── HuggingFace utilities ────────────────────────────────────────────────────
-huggingface-hub>=0.24
+# ── Embeddings — fastembed (ONNX Runtime, NO torch required) ─────────────────
+# Replaces: torch + sentence-transformers + langchain-huggingface (~400 MB RAM)
+# fastembed uses ONNX Runtime: loads in ~100 MB, releases GIL during inference,
+# supports BAAI/bge-small-en-v1.5 natively at 384 dimensions.
+# Critical for Render free tier (512 MB RAM limit).
+fastembed>=0.3.1
 
 # ── Vector database ───────────────────────────────────────────────────────────
 qdrant-client>=1.12
