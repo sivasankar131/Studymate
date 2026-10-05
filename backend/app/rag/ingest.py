@@ -59,13 +59,16 @@ DOC_ID_KEY    = "metadata.doc_id"
 @lru_cache(maxsize=1)
 def get_embeddings():
     """
-    Load the embedding model once per process — lazily on first use.
-
-    Uses fastembed (ONNX Runtime) instead of HuggingFaceEmbeddings (torch).
-    Memory usage: ~100 MB vs ~400 MB.  ONNX releases the GIL during inference
-    so the asyncio event loop is never blocked.  Same 384-dim output.
+    Load the fastembed ONNX model once per process — lazily on first use.
+    Falls back with a clear error if fastembed is not installed or fails to load.
     """
-    from fastembed import TextEmbedding  # noqa: PLC0415
+    try:
+        from fastembed import TextEmbedding  # noqa: PLC0415
+    except ImportError as exc:
+        raise RuntimeError(
+            "fastembed is not installed. Run: pip install fastembed>=0.3.1"
+        ) from exc
+
     from langchain_core.embeddings import Embeddings
 
     log.info("[EMBED] loading fastembed model %s …", settings.EMBEDDING_MODEL)
