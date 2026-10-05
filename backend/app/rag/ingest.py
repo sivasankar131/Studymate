@@ -15,7 +15,6 @@ from functools import lru_cache
 from typing import Optional
 
 from langchain_core.documents import Document
-from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pypdf import PdfReader
@@ -46,8 +45,15 @@ DOC_ID_KEY    = "metadata.doc_id"
 # ─── Cached singletons ───────────────────────────────────────────────────────
 
 @lru_cache(maxsize=1)
-def get_embeddings() -> HuggingFaceEmbeddings:
-    """Load the embedding model once per process — lazily on first use."""
+def get_embeddings():
+    """Load the embedding model once per process — lazily on first use.
+    Import is deferred to avoid loading torch/sentence-transformers at startup
+    which would exhaust Render free-tier RAM (512 MB limit) before serving requests.
+    """
+    # Deferred import: torch + sentence-transformers together use ~400 MB.
+    # Importing them here (not at module level) means they only load when the
+    # first document is actually uploaded, not on every cold start.
+    from langchain_huggingface import HuggingFaceEmbeddings  # noqa: PLC0415
     log.info("[EMBED] loading model %s …", settings.EMBEDDING_MODEL)
     t0 = time.perf_counter()
     emb = HuggingFaceEmbeddings(
