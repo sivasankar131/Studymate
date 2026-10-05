@@ -12,7 +12,7 @@ export const ChatPage: React.FC = () => {
   const urlDocId = searchParams.get('doc') ?? undefined;
   const { documents } = useDocuments();
 
-  const { messages, thinking, sendMessage, clearConversation, setDocId, setMode, activeDocId, activeMode } =
+  const { messages, thinking, wakeState, retryInfo, sendMessage, clearConversation, setDocId, setMode, activeDocId, activeMode } =
     useChat({ docId: urlDocId, mode: 'rag' });
 
   useEffect(() => { setDocId(urlDocId); }, [urlDocId, setDocId]);
@@ -128,6 +128,32 @@ export const ChatPage: React.FC = () => {
 
         {clearError && (
           <ErrorMessage variant="banner" message={clearError} title="Clear failed" onDismiss={() => setClearError(null)} className="mx-4 mt-3"/>
+        )}
+
+        {/* Wake-up / cold-start banner */}
+        {(wakeState === 'checking' || wakeState === 'waking') && (
+          <div className="mx-4 mt-3 flex items-center gap-3 px-4 py-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-sm animate-[fadeIn_0.2s_ease-in-out]">
+            <svg className="w-4 h-4 shrink-0 animate-spin text-amber-500" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+            </svg>
+            <span className="font-medium">
+              {wakeState === 'waking'
+                ? '🔄 Waking up the StudyMate server. This may take up to a minute…'
+                : 'Checking server availability…'}
+            </span>
+          </div>
+        )}
+
+        {/* Retry banner */}
+        {retryInfo && (
+          <div className="mx-4 mt-2 flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-50 border border-blue-200 text-blue-700 text-xs font-medium">
+            <svg className="w-3.5 h-3.5 shrink-0 animate-spin" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+            </svg>
+            {retryInfo}
+          </div>
         )}
 
         <ChatWindow messages={messages} thinking={thinking}

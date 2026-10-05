@@ -1,9 +1,16 @@
 /**
- * useHealth – polls GET /health/ready to show backend status in the UI.
+ * useHealth – polls GET /health/ready to show backend status in the Navbar.
  *
- * Cancellation: each poll carries an AbortSignal. When the component
- * unmounts the signal is aborted and the result is silently discarded —
- * no 'offline' flash, no error state, no side-effects on other features.
+ * Cold-start handling
+ * ───────────────────
+ * Render free tier can take 30–90 s to wake up. Rather than immediately
+ * showing "Backend offline" (which worries the user for no reason), we:
+ *  - show "checking" for the first WAKING_GRACE_MS milliseconds
+ *  - only flip to "offline" once we've exceeded the grace period
+ *  - use a 90 s per-request timeout so the health check survives a cold start
+ *
+ * Cancellation: each check carries an AbortSignal. Unmount / navigation
+ * cancellations are silently ignored.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -11,7 +18,7 @@ import * as api from '@/services/api';
 import { isCancelledError } from '@/services/api';
 import type { HealthReady } from '@/types';
 
-export type BackendStatus = 'checking' | 'ok' | 'degraded' | 'offline';
+export type BackendStatus = 'checking' | 'waking' | 'ok' | 'degraded' | 'offline';
 
 export interface UseHealthReturn {
   status: BackendStatus;
@@ -20,16 +27,20 @@ export interface UseHealthReturn {
   check: () => Promise<void>;
 }
 
-export function useHealth(intervalMs = 30_000): UseHealthReturn {
+/** Grace period before we show "offline" — covers Render cold-start window */
+const WAKING_GRACE_MS = 90_000;
+
+export function useHealth(intervalMs = 60_000): UseHealthReturn {
   const [status, setStatus]           = useState<BackendStatus>('checking');
   const [detail, setDetail]           = useState<HealthReady | null>(null);
   const [lastChecked, setLastChecked] = useState<Date | null>(null);
 
-  const abortRef  = useRef<AbortController | null>(null);
-  const isMounted = useRef(true);
+  const abortRef     = useRef<AbortController | null>(null);
+  const isMounted    = useRef(true);
+  const firstCheckAt = useRef<number>(Date.now());
+  const hasEverBeenOk = useRef(false);
 
   const check = useCallback(async () => {
-    // Abort any in-flight health request before starting a new one
     if (abortRef.current) abortRef.current.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -38,13 +49,21 @@ export function useHealth(intervalMs = 30_000): UseHealthReturn {
       const data = await api.getHealthReady(controller.signal);
       if (controller.signal.aborted || !isMounted.current) return;
       setDetail(data);
+      hasEverBeenOk.current = true;
       setStatus(data.status === 'ok' ? 'ok' : 'degraded');
     } catch (err) {
-      // Intentional cancellation — do nothing, don't flip status to 'offline'
       if (isCancelledError(err) || controller.signal.aborted) return;
       if (!isMounted.current) return;
       setDetail(null);
-      setStatus('offline');
+
+      // Within the grace period, show "waking" instead of "offline"
+      // unless the backend was confirmed alive at least once this session.
+      const elapsed = Date.now() - firstCheckAt.current;
+      if (!hasEverBeenOk.current && elapsed < WAKING_GRACE_MS) {
+        setStatus('waking');
+      } else {
+        setStatus('offline');
+      }
     } finally {
       if (isMounted.current && !controller.signal.aborted) {
         setLastChecked(new Date());
@@ -53,8 +72,11 @@ export function useHealth(intervalMs = 30_000): UseHealthReturn {
   }, []);
 
   useEffect(() => {
-    isMounted.current = true;
+    isMounted.current    = true;
+    firstCheckAt.current = Date.now();
     void check();
+    // Poll less frequently than before — cold-start awareness means we
+    // don't need to hammer the server on every mount
     const timer = setInterval(() => void check(), intervalMs);
     return () => {
       isMounted.current = false;

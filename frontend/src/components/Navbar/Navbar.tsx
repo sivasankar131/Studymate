@@ -12,6 +12,7 @@ const statusDot: Record<string, string> = {
   degraded: 'bg-amber-400',
   offline:  'bg-red-400',
   checking: 'bg-surface-400 animate-pulse',
+  waking:   'bg-amber-400 animate-pulse',
 };
 
 const statusLabel: Record<string, string> = {
@@ -19,6 +20,7 @@ const statusLabel: Record<string, string> = {
   degraded: 'Backend degraded',
   offline:  'Backend offline',
   checking: 'Checking…',
+  waking:   'Waking up server…',
 };
 
 /** Unique geometric logo mark – stacked pages + spark */
