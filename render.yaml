@@ -3,10 +3,11 @@ services:
     name: studymate-api
     runtime: python
     rootDir: backend
-    # fastembed uses ONNX Runtime — no torch, no CUDA, no pre-install needed.
-    # pip install -r requirements.txt is sufficient.
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    # Tell Render to use GET /health for its health check — avoids HEAD /
+    # returning 405 which causes Render to restart the service mid-indexing.
+    healthCheckPath: /health
     envVars:
       - key: GROQ_API_KEY
         sync: false
