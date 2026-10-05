@@ -105,19 +105,14 @@ Hugging Face             Text Embeddings
 BAAI/bge-small-en-v1.5   Embedding Model
 Groq                     Large Language Model
 
-Data & Storage
 
-Technology   Purpose
-
-PostgreSQL   Application Database
-Qdrant       Vector Database
 
 Deployment
 
 Platform   Purpose
 
 Netlify    Frontend Hosting
-Render     Backend Hosting
+
 
 ◇ Project Structure
 
@@ -146,7 +141,7 @@ StudyMate/
 
 01 --- Clone Repository
 
-git clone <your-github-repository-url>
+git clone <>
 cd StudyMate
 
 02 --- Backend Setup
@@ -191,13 +186,11 @@ Security: Never commit .env files or API keys to GitHub.
 
 python -m uvicorn app.main:app --reload
 
-Backend:
 
-http://127.0.0.1:8000
 
-API Documentation:
 
-http://127.0.0.1:8000/docs
+
+
 
 ◇ Frontend Setup
 
@@ -270,30 +263,13 @@ the relevant content.
 
 ⟐ Production Configuration
 
-Frontend
 
-VITE_API_BASE_URL=https://studymate-5rlo.onrender.com
-
-Backend
 
 FRONTEND_URL=https://ragwise.netlify.app
 
-Deployment
 
-Frontend  →  Netlify
-Backend   →  Render
-Database  →  PostgreSQL
-Vectors   →  Qdrant
 
-⌬ Security
 
-StudyMate follows basic security practices:
-
-◇ API keys stored in environment variables
-◇ .env files excluded from Git
-◇ Backend secrets are not exposed to the frontend
-◇ CORS configured for the production frontend
-◇ Document processing handled by the backend
 
 ⟡ Future Improvements
 
@@ -308,25 +284,31 @@ StudyMate follows basic security practices:
 ◇ Personalized learning
 
 ── Author
+
+
 Sai Kumar Dungala
 
 B.Tech --- Computer Science & Engineering
+
 Cyber Security
 
 
 T. Siva Sankar
 
 B.Tech --- Computer Science & Engineering
+
 Cyber Security
 
 Tekkala Swapna
 
 B.Tech --- Computer Science & Engineering
+
 Cyber Security
 
 Siva Sankari M
 
 B.Tech --- Computer Science & Engineering
+
 Cyber Security
 
 
