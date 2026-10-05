@@ -1,13 +1,12 @@
 /**
  * Centralized API service for StudyMate.
+ * All backend calls go through this module — no fetch/axios elsewhere.
  *
- * Every request to the FastAPI backend goes through this module.
- * No fetch/axios calls should exist anywhere else in the codebase.
- *
- * All endpoints match the actual backend routes exactly:
+ * Endpoints used:
  *   POST   /upload
  *   GET    /documents
- *   DELETE /documents/{doc_id}
+ *   GET    /documents/{id}/status   ← NEW (status polling)
+ *   DELETE /documents/{id}
  *   POST   /chat
  *   POST   /agent/chat
  *   GET    /history/{session_id}
@@ -22,6 +21,7 @@ import type {
   ChatRequest,
   ChatResponse,
   Document,
+  DocumentStatusResponse,
   HealthReady,
   HistoryItem,
 } from '@/types';
@@ -30,7 +30,9 @@ import type {
 
 const client = axios.create({
   baseURL: getApiBase(),
-  timeout: 120_000, // LLM calls can take a while
+  // 30 s for normal requests; the upload itself is fast now (returns 202 quickly).
+  // LLM chat calls can take longer — set per-request where needed.
+  timeout: 30_000,
   headers: { Accept: 'application/json' },
 });
 
@@ -57,23 +59,17 @@ function normalise(err: unknown): never {
     if (status === 0 || ae.code === 'ECONNABORTED' || ae.code === 'ERR_NETWORK') {
       throw new ApiError(
         0,
-        'Unable to connect to StudyMate backend. Please make sure the backend server is running.',
+        'Unable to connect to the StudyMate backend. Please check that the server is running.',
       );
     }
     if (status === 400) throw new ApiError(status, detail ?? 'Bad request.');
     if (status === 404) throw new ApiError(status, detail ?? 'Resource not found.');
-    if (status === 413) throw new ApiError(status, detail ?? 'File is too large.');
-    if (status === 422) throw new ApiError(status, detail ?? 'Could not process the file.');
+    if (status === 413) throw new ApiError(status, detail ?? `File is too large. Maximum size is 10 MB.`);
+    if (status === 422) throw new ApiError(status, detail ?? 'Could not process this file.');
     if (status === 429)
-      throw new ApiError(
-        status,
-        detail ?? 'The AI service is rate-limited. Please wait a moment and try again.',
-      );
+      throw new ApiError(status, detail ?? 'The AI service is rate-limited. Please wait a moment.');
     if (status === 502 || status === 503)
-      throw new ApiError(
-        status,
-        detail ?? 'The AI service is temporarily unavailable. Please try again.',
-      );
+      throw new ApiError(status, detail ?? 'The AI service is temporarily unavailable. Please try again.');
 
     throw new ApiError(status, detail ?? `Unexpected error (${status}).`);
   }
@@ -83,26 +79,37 @@ function normalise(err: unknown): never {
 // ─── Document endpoints ──────────────────────────────────────────────────────
 
 /**
- * Upload a single file.
- * Backend expects: multipart/form-data  field name = "file"
- * @param onProgress  optional upload-progress callback (0–100)
+ * Upload a file. Backend returns 202 quickly (status = "queued").
+ * Actual ingestion runs in the background — poll getDocumentStatus() for progress.
  */
 export async function uploadDocument(
   file: File,
   onProgress?: (pct: number) => void,
 ): Promise<Document> {
   const form = new FormData();
-  form.append('file', file); // field name must match FastAPI: File(...)
-
+  form.append('file', file);
   try {
     const { data } = await client.post<Document>('/upload', form, {
-      // Do NOT set Content-Type manually – axios sets it with the correct boundary
+      timeout: 60_000,   // generous timeout only for the file transfer itself
       onUploadProgress: (e: AxiosProgressEvent) => {
         if (onProgress && e.total) {
           onProgress(Math.round((e.loaded * 100) / e.total));
         }
       },
     });
+    return data;
+  } catch (err) {
+    normalise(err);
+  }
+}
+
+/**
+ * Poll GET /documents/{id}/status to track background ingestion progress.
+ * Returns the lightweight DocumentStatusResponse shape.
+ */
+export async function getDocumentStatus(docId: string): Promise<DocumentStatusResponse> {
+  try {
+    const { data } = await client.get<DocumentStatusResponse>(`/documents/${docId}/status`);
     return data;
   } catch (err) {
     normalise(err);
@@ -130,24 +137,18 @@ export async function deleteDocument(docId: string): Promise<void> {
 
 // ─── Chat endpoints ──────────────────────────────────────────────────────────
 
-/**
- * Plain RAG chat:  retrieve → Groq LLM → answer + sources
- */
 export async function sendChat(req: ChatRequest): Promise<ChatResponse> {
   try {
-    const { data } = await client.post<ChatResponse>('/chat', req);
+    const { data } = await client.post<ChatResponse>('/chat', req, { timeout: 120_000 });
     return data;
   } catch (err) {
     normalise(err);
   }
 }
 
-/**
- * Agent chat:  model plans steps, calls tools (search, summarise, quiz, web)
- */
 export async function sendAgentChat(req: ChatRequest): Promise<ChatResponse> {
   try {
-    const { data } = await client.post<ChatResponse>('/agent/chat', req);
+    const { data } = await client.post<ChatResponse>('/agent/chat', req, { timeout: 120_000 });
     return data;
   } catch (err) {
     normalise(err);

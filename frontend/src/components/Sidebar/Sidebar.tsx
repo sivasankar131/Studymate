@@ -132,7 +132,7 @@ export const Sidebar: React.FC<Props> = ({ open, onClose }) => {
             <IconUpload />
             Upload Document
           </button>
-          <p className="text-center text-[11px] text-surface-400 mt-2.5">
+          <p className="text-center text-xs font-semibold text-surface-600 mt-2.5">
             Supports PDF &amp; TXT · max 10 MB
           </p>
         </div>

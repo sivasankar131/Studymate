@@ -57,7 +57,7 @@ export const MessageInput: React.FC<Props> = ({
               {(['rag', 'agent'] as ChatMode[]).map(m => (
                 <button key={m} onClick={() => onModeChange(m)}
                   className={`px-3 py-1 rounded-md text-xs font-semibold transition-all duration-150
-                    ${mode === m ? 'bg-white text-brand-700 shadow-sm border border-surface-200' : 'text-surface-400 hover:text-surface-700'}`}
+                    ${mode === m ? 'bg-white text-brand-700 shadow-sm border border-surface-200' : 'text-surface-600 hover:text-surface-900'}`}
                   title={m === 'rag' ? 'RAG – retrieve from your documents' : 'Agent – multi-step reasoning with tools'}>
                   {m === 'rag' ? (
                     <span className="flex items-center gap-1">
@@ -83,7 +83,7 @@ export const MessageInput: React.FC<Props> = ({
           )}
           {onClear && (
             <button onClick={onClear}
-              className="flex items-center gap-1.5 text-xs text-surface-400 hover:text-surface-700 transition-colors px-2 py-1 rounded-lg hover:bg-surface-100">
+              className="flex items-center gap-1.5 text-xs font-semibold text-surface-600 hover:text-surface-900 transition-colors px-2 py-1 rounded-lg hover:bg-surface-100">
               {/* Bin icon */}
               <svg className="w-3.5 h-3.5" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="2,3.5 12,3.5"/>
@@ -145,7 +145,7 @@ export const MessageInput: React.FC<Props> = ({
         </div>
       </div>
 
-      <p className="text-[11px] text-surface-300 mt-1.5 px-1">
+      <p className="text-[11px] font-semibold text-surface-500 mt-1.5 px-1">
         <kbd className="px-1 py-0.5 rounded bg-surface-100 border border-surface-200 text-surface-400 font-mono text-[10px]">Enter</kbd> send
         &nbsp;·&nbsp;
         <kbd className="px-1 py-0.5 rounded bg-surface-100 border border-surface-200 text-surface-400 font-mono text-[10px]">Shift+Enter</kbd> new line

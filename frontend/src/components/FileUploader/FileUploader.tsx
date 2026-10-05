@@ -1,6 +1,5 @@
 import React, { useCallback, useRef, useState } from 'react';
 import { FileCard } from '@/components/FileCard';
-import { LoadingIndicator } from '@/components/LoadingIndicator';
 import { useUpload } from '@/hooks/useUpload';
 import { SUPPORTED_EXTENSIONS, SUPPORTED_LABEL, MAX_UPLOAD_MB } from '@/utils/env';
 import type { Document } from '@/types';
@@ -38,8 +37,8 @@ export const FileUploader: React.FC<Props> = ({ onDocumentReady, onAllDone, clas
   }, [uploadOne, onDocumentReady]);
 
   const pendingCount = queue.filter(s => s.status === 'pending').length;
-  const errorCount   = queue.filter(s => s.status === 'error').length;
   const doneCount    = queue.filter(s => s.status === 'done').length;
+  const errorCount   = queue.filter(s => s.status === 'error').length;
 
   return (
     <div className={`space-y-4 ${className}`}>
@@ -55,70 +54,74 @@ export const FileUploader: React.FC<Props> = ({ onDocumentReady, onAllDone, clas
           min-h-[200px] p-8 rounded-2xl border-2 border-dashed
           cursor-pointer select-none transition-all duration-200
           ${dragging
-            ? 'border-brand-400 bg-brand-50 scale-[1.01] shadow-glow-brand'
-            : 'border-surface-300 bg-surface-50 hover:border-brand-400 hover:bg-brand-50/40'
+            ? 'border-brand-500 bg-brand-50 scale-[1.01] shadow-glow-brand'
+            : 'border-surface-400 bg-surface-100 hover:border-brand-400 hover:bg-brand-50/60'
           }
         `}
       >
         <input ref={inputRef} type="file" multiple accept={SUPPORTED_EXTENSIONS.join(',')}
-          onChange={onFileInputChange} className="sr-only" aria-hidden="true" tabIndex={-1}/>
+          onChange={onFileInputChange} className="sr-only" aria-hidden="true" tabIndex={-1} />
 
-        {/* Upload icon – tray with arrow */}
-        <div className={`w-14 h-14 rounded-2xl flex items-center justify-center mb-4 transition-colors
-          ${dragging ? 'bg-brand-100 text-brand-600' : 'bg-white border border-surface-200 text-surface-400 shadow-sm'}`}>
+        {/* Icon */}
+        <div className={`w-14 h-14 rounded-2xl flex items-center justify-center mb-4
+          ${dragging ? 'bg-brand-100 text-brand-700' : 'bg-white border-2 border-surface-300 text-surface-600 shadow-sm'}`}>
           {dragging ? (
-            /* Arrow dropping down into tray */
-            <svg className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round">
-              <line x1="12" y1="3"  x2="12" y2="15"/>
-              <polyline points="8,11 12,15 16,11"/>
-              <path d="M4 19h16"/>
-              <path d="M4 15v3a1 1 0 001 1h14a1 1 0 001-1v-3"/>
+            <svg className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="3" x2="12" y2="15" />
+              <polyline points="8,11 12,15 16,11" />
+              <path d="M4 19h16" />
+              <path d="M4 15v3a1 1 0 001 1h14a1 1 0 001-1v-3" />
             </svg>
           ) : (
-            /* Page with an up-arrow */
-            <svg className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round">
-              <path d="M14 3H6a1 1 0 00-1 1v16a1 1 0 001 1h12a1 1 0 001-1V8l-5-5z"/>
-              <polyline points="14,3 14,8 19,8"/>
-              <line x1="12" y1="18" x2="12" y2="12"/>
-              <polyline points="9,15 12,12 15,15"/>
+            <svg className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 3H6a1 1 0 00-1 1v16a1 1 0 001 1h12a1 1 0 001-1V8l-5-5z" />
+              <polyline points="14,3 14,8 19,8" />
+              <line x1="12" y1="18" x2="12" y2="12" />
+              <polyline points="9,15 12,12 15,15" />
             </svg>
           )}
         </div>
 
-        <p className={`text-sm font-semibold mb-1 ${dragging ? 'text-brand-700' : 'text-surface-700'}`}>
+        <p className={`text-sm font-bold mb-1 ${dragging ? 'text-brand-700' : 'text-surface-800'}`}>
           {dragging ? 'Release to add files' : 'Drop files here or click to browse'}
         </p>
-        <p className="text-xs text-surface-400 mb-4">
-          {dragging ? 'Files will be added to the upload queue' : 'Select one or multiple documents'}
+        <p className="text-xs font-semibold text-surface-600 mb-4">
+          {dragging ? 'Files will be added to the upload queue' : 'Select one or multiple documents to upload'}
         </p>
 
         {!dragging && (
-          <span className="px-4 py-2 rounded-xl bg-brand-600 text-white text-xs font-semibold hover:bg-brand-700 transition-colors shadow-sm">
+          <span className="px-4 py-2 rounded-xl bg-brand-600 text-white text-xs font-bold
+                           hover:bg-brand-700 transition-colors shadow-sm">
             Choose Files
           </span>
         )}
 
+        {/* Format badges */}
         <div className="absolute bottom-3 flex items-center gap-2">
           {SUPPORTED_EXTENSIONS.map(ext => (
-            <span key={ext} className="text-[10px] text-surface-400 bg-white border border-surface-200 px-2 py-0.5 rounded-full uppercase tracking-wide font-medium">
+            <span key={ext} className="text-[11px] font-bold text-surface-700 bg-white
+                                       border-2 border-surface-300 px-2 py-0.5 rounded-full uppercase tracking-wide">
               {ext.replace('.', '')}
             </span>
           ))}
-          <span className="text-[10px] text-surface-400">· max {MAX_UPLOAD_MB} MB</span>
+          <span className="text-[11px] font-semibold text-surface-600">· max {MAX_UPLOAD_MB} MB</span>
         </div>
       </div>
 
       {/* Queue */}
       {queue.length > 0 && (
-        <div className="space-y-2 animate-fade-in">
+        <div className="space-y-2 animate-[fadeIn_0.2s_ease-in-out]">
           <div className="flex items-center justify-between px-1">
-            <p className="text-xs font-medium text-surface-500">
+            <p className="text-xs font-bold text-surface-700">
               {queue.length} file{queue.length !== 1 ? 's' : ''} queued
-              {doneCount > 0 && ` · ${doneCount} done`}
-              {errorCount > 0 && ` · ${errorCount} failed`}
+              {doneCount > 0 && <span className="text-emerald-700"> · {doneCount} ready</span>}
+              {errorCount > 0 && <span className="text-red-700"> · {errorCount} failed</span>}
             </p>
             {doneCount > 0 && (
-              <button onClick={clearCompleted} className="text-xs text-surface-400 hover:text-surface-700 transition-colors">
+              <button onClick={clearCompleted}
+                className="text-xs font-semibold text-surface-500 hover:text-surface-800 transition-colors">
                 Clear completed
               </button>
             )}
@@ -126,19 +129,34 @@ export const FileUploader: React.FC<Props> = ({ onDocumentReady, onAllDone, clas
 
           <div className="space-y-2 max-h-72 overflow-y-auto pr-1 custom-scroll">
             {queue.map(item => (
-              <FileCard key={item.id} item={item} onRemove={removeFile} onRetry={handleRetry}/>
+              <FileCard key={item.id} item={item} onRemove={removeFile} onRetry={handleRetry} />
             ))}
           </div>
 
           <div className="flex items-center justify-between pt-1">
-            <div>{isUploading && <LoadingIndicator variant="dots" label="Uploading & processing…" size="sm"/>}</div>
+            <div>
+              {isUploading && (
+                <p className="text-xs font-bold text-brand-700 flex items-center gap-1.5">
+                  <span className="flex gap-0.5">
+                    {[0, 1, 2].map(i => (
+                      <span key={i} className="w-1.5 h-1.5 rounded-full bg-brand-600"
+                        style={{ animation: `bounceDot 1.4s ${i * 0.16}s infinite ease-in-out both` }} />
+                    ))}
+                  </span>
+                  Uploading &amp; processing…
+                </p>
+              )}
+            </div>
             {pendingCount > 0 && !isUploading && (
               <button onClick={handleUploadAll} disabled={isUploading}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-brand-600 hover:bg-brand-700 disabled:opacity-50 text-white text-sm font-semibold transition-colors shadow-sm">
-                <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="8" y1="2" x2="8" y2="10"/>
-                  <polyline points="5,5 8,2 11,5"/>
-                  <path d="M3 12h10"/>
+                className="flex items-center gap-2 px-4 py-2 rounded-xl
+                           bg-brand-600 hover:bg-brand-700 disabled:opacity-50
+                           text-white text-sm font-bold transition-colors shadow-sm">
+                <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none"
+                  stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="8" y1="2" x2="8" y2="10" />
+                  <polyline points="5,5 8,2 11,5" />
+                  <path d="M3 12h10" />
                 </svg>
                 Upload {pendingCount} file{pendingCount !== 1 ? 's' : ''}
               </button>
@@ -147,9 +165,8 @@ export const FileUploader: React.FC<Props> = ({ onDocumentReady, onAllDone, clas
         </div>
       )}
 
-      <p className="text-xs text-surface-400 text-center">
-        <span className="font-medium text-surface-500">Supported:</span> {SUPPORTED_LABEL}.
-        Additional formats require backend extension.
+      <p className="text-xs font-semibold text-surface-600 text-center">
+        <span className="font-bold text-surface-800">Supported formats:</span> {SUPPORTED_LABEL} · max {MAX_UPLOAD_MB} MB
       </p>
     </div>
   );

@@ -86,7 +86,7 @@ export const Navbar: React.FC<Props> = ({ onMenuToggle, sidebarOpen }) => {
         </Link>
 
         <span className="hidden md:block text-surface-400 text-sm select-none">/</span>
-        <span className="hidden md:block text-surface-500 text-sm">{pageTitle}</span>
+        <span className="hidden md:block text-surface-500 font-semibold text-sm">{pageTitle}</span>
       </div>
 
       {/* Right */}
@@ -94,7 +94,7 @@ export const Navbar: React.FC<Props> = ({ onMenuToggle, sidebarOpen }) => {
         {/* Health pill */}
         <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-surface-100 border border-surface-300" title={statusLabel[status]}>
           <span className={`w-2 h-2 rounded-full ${statusDot[status]}`} />
-          <span className="text-xs text-surface-500">{statusLabel[status]}</span>
+          <span className="text-xs font-semibold text-surface-600">{statusLabel[status]}</span>
         </div>
 
         {/* Ask AI CTA */}
