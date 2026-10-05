@@ -139,10 +139,11 @@ def _run_ingestion(doc_id: str, client_id: str, tmp_path: str, filename: str) ->
     try:
         # ── Stage 1: read temp file ───────────────────────────────────────────
         _set_status(doc_id, STATUS_PROCESSING, 5)
+        data: bytes | None = None
         try:
             with open(tmp_path, "rb") as fh:
                 data = fh.read()
-        except Exception as exc:
+        except Exception:
             log.exception("[INGEST] cannot read temp file  doc_id=%s", doc_id)
             _set_status(doc_id, STATUS_FAILED, 0,
                         error_message="Could not read the uploaded file. Please try again.")
@@ -154,6 +155,7 @@ def _run_ingestion(doc_id: str, client_id: str, tmp_path: str, filename: str) ->
         # ── Stage 2: extract pages ────────────────────────────────────────────
         _set_status(doc_id, STATUS_PROCESSING, 15)
         t0 = time.perf_counter()
+        pages = None
         try:
             from app.rag.ingest import extract_pages
             pages = extract_pages(data, filename)
@@ -161,9 +163,16 @@ def _run_ingestion(doc_id: str, client_id: str, tmp_path: str, filename: str) ->
             log.warning("[INGEST] extraction failed  doc_id=%s  reason=%s", doc_id, exc)
             _set_status(doc_id, STATUS_FAILED, 0, error_message=str(exc))
             return
+        except Exception:
+            log.exception("[INGEST] extraction unexpected error  doc_id=%s", doc_id)
+            _set_status(doc_id, STATUS_FAILED, 0,
+                        error_message="Could not extract text from this file. Please try again.")
+            return
         finally:
-            del data
-            gc.collect()   # free the raw bytes before loading torch
+            # Safe delete — data may be None if open() failed
+            if data is not None:
+                del data
+            gc.collect()
 
         log.info("[INGEST] extraction  pages=%d  %.2fs", len(pages), time.perf_counter() - t0)
 
@@ -173,6 +182,8 @@ def _run_ingestion(doc_id: str, client_id: str, tmp_path: str, filename: str) ->
         # ── Stage 3: chunk ────────────────────────────────────────────────────
         _set_status(doc_id, STATUS_PROCESSING, 35)
         t0 = time.perf_counter()
+        chunks: list = []
+        num_pages = len(pages)
         try:
             from langchain_text_splitters import RecursiveCharacterTextSplitter
             from langchain_core.documents import Document as LCDoc
@@ -181,8 +192,6 @@ def _run_ingestion(doc_id: str, client_id: str, tmp_path: str, filename: str) ->
                 chunk_size=settings.CHUNK_SIZE,
                 chunk_overlap=settings.CHUNK_OVERLAP,
             )
-            chunks: list[LCDoc] = []
-            num_pages = len(pages)
             for page_no, text_content in pages:
                 if deadline_fired.is_set():
                     return
@@ -204,8 +213,9 @@ def _run_ingestion(doc_id: str, client_id: str, tmp_path: str, filename: str) ->
                         error_message="Text chunking failed. Please try again.")
             return
         finally:
+            # Safe delete — pages is guaranteed to be set here
             del pages
-            gc.collect()   # free page text before loading embedding model
+            gc.collect()
 
         if not chunks:
             _set_status(doc_id, STATUS_FAILED, 0,
@@ -218,12 +228,12 @@ def _run_ingestion(doc_id: str, client_id: str, tmp_path: str, filename: str) ->
         if deadline_fired.is_set():
             return
 
-        # ── Stage 4: embed + insert (GIL released during torch + network I/O) ─
+        # ── Stage 4: embed + insert ───────────────────────────────────────────
         _set_status(doc_id, STATUS_INDEXING, 55)
         t0 = time.perf_counter()
         try:
             from app.rag.ingest import get_store, BATCH_SIZE
-            store = get_store()   # torch loads here (lazy, @lru_cache)
+            store = get_store()   # fastembed ONNX model loads here (lazy, cached)
             total_batches = (len(chunks) + BATCH_SIZE - 1) // BATCH_SIZE
             for batch_idx, i in enumerate(range(0, len(chunks), BATCH_SIZE)):
                 if deadline_fired.is_set():
