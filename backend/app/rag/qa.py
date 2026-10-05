@@ -1,4 +1,4 @@
-"""LLM access and the plain RAG answer step: retrieved chunks + question -> cited answer."""
+"""LLM access and the plain RAG answer step."""
 from functools import lru_cache
 from typing import Any, Optional
 
@@ -31,7 +31,7 @@ Question: {question}
 Answer:"""
 
 
-@lru_cache
+@lru_cache(maxsize=1)
 def get_llm() -> ChatGroq:
     return ChatGroq(
         model=settings.LLM_MODEL,
@@ -41,22 +41,16 @@ def get_llm() -> ChatGroq:
 
 
 def message_text(content: Any) -> str:
-    """Normalise an LLM message's content (str or list of content blocks) to plain text."""
     if isinstance(content, str):
         return content
-
     if isinstance(content, list):
         parts = []
-
         for part in content:
             if isinstance(part, str):
                 parts.append(part)
-
             elif isinstance(part, dict) and part.get("type") == "text":
                 parts.append(part.get("text", ""))
-
         return "".join(parts)
-
     return str(content)
 
 
@@ -65,18 +59,12 @@ def answer_question(
     docs: list[Document],
     history: Optional[list[tuple[str, str]]] = None,
 ) -> dict[str, Any]:
-    """Answer from the retrieved chunks only and return the answer with its sources."""
-
+    """Answer from retrieved chunks only, return answer + sources."""
     if not docs:
-        return {
-            "answer": NO_DOCS_ANSWER,
-            "sources": [],
-        }
-
-    recent = (history or [])[-6:]
+        return {"answer": NO_DOCS_ANSWER, "sources": []}
 
     history_text = "\n".join(
-        f"{role.title()}: {text}" for role, text in recent
+        f"{role.title()}: {text}" for role, text in (history or [])[-6:]
     ) or "(none)"
 
     prompt = PROMPT.format(
@@ -84,10 +72,8 @@ def answer_question(
         history=history_text,
         question=question,
     )
-
     response = get_llm().invoke(prompt)
-
     return {
-        "answer": message_text(response.content).strip(),
+        "answer":  message_text(response.content).strip(),
         "sources": docs_to_sources(docs),
     }

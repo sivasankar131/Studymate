@@ -1,22 +1,16 @@
 /**
  * Centralized API service for StudyMate.
- * All backend calls go through this module.
  *
- * Endpoints:
- *   POST   /upload
- *   GET    /documents
- *   GET    /documents/{id}/status
- *   DELETE /documents/{id}
- *   POST   /chat
- *   POST   /agent/chat
- *   GET    /history/{session_id}
- *   DELETE /history/{session_id}
- *   GET    /health
- *   GET    /health/ready
+ * Every request automatically carries:
+ *   X-Client-ID: <stable browser UUID from localStorage>
+ *
+ * This header is the sole mechanism for browser-level data isolation.
+ * The backend rejects any request that lacks a valid UUID v4 in this header.
  */
 
 import axios, { AxiosError, type AxiosProgressEvent } from 'axios';
 import { getApiBase } from '@/utils/env';
+import { getClientId } from '@/utils/client';
 import type {
   ChatRequest,
   ChatResponse,
@@ -26,7 +20,7 @@ import type {
   HistoryItem,
 } from '@/types';
 
-// ─── Axios instance ──────────────────────────────────────────────────────────
+// ─── Axios instance ───────────────────────────────────────────────────────────
 
 const client = axios.create({
   baseURL: getApiBase(),
@@ -34,7 +28,18 @@ const client = axios.create({
   headers: { Accept: 'application/json' },
 });
 
-// ─── Error normalisation ─────────────────────────────────────────────────────
+/**
+ * Request interceptor — injects X-Client-ID before every request.
+ * Using an interceptor (not a static default header) guarantees the value
+ * is read fresh from localStorage on each call, so it stays correct even
+ * if resetClientId() is called during a session.
+ */
+client.interceptors.request.use(config => {
+  config.headers['X-Client-ID'] = getClientId();
+  return config;
+});
+
+// ─── Error normalisation ──────────────────────────────────────────────────────
 
 export class ApiError extends Error {
   constructor(
@@ -47,17 +52,9 @@ export class ApiError extends Error {
   }
 }
 
-/**
- * Extract a human-readable message from any error shape.
- * Handles FastAPI {detail: string}, {detail: [...]} and plain HTML error pages
- * returned by Render/proxy layers.
- */
 function extractDetail(data: unknown): string | null {
   if (!data) return null;
-  if (typeof data === 'string') {
-    // Strip HTML tags from proxy error pages
-    return data.replace(/<[^>]+>/g, '').trim().slice(0, 200) || null;
-  }
+  if (typeof data === 'string') return data.replace(/<[^>]+>/g, '').trim().slice(0, 200) || null;
   if (typeof data === 'object') {
     const d = (data as Record<string, unknown>).detail;
     if (typeof d === 'string') return d;
@@ -68,25 +65,16 @@ function extractDetail(data: unknown): string | null {
 
 function normalise(err: unknown): never {
   if (axios.isAxiosError(err)) {
-    const ae = err as AxiosError;
+    const ae     = err as AxiosError;
     const status = ae.response?.status ?? 0;
     const detail = extractDetail(ae.response?.data) ?? '';
 
-    // Network-level failures (no response received)
     if (status === 0 || ae.code === 'ECONNABORTED' || ae.code === 'ERR_NETWORK') {
-      throw new ApiError(
-        0,
-        'Unable to connect to the StudyMate backend. Please check that the server is running.',
-      );
+      throw new ApiError(0, 'Unable to connect to the StudyMate backend. Please check that the server is running.');
     }
-    // Render/Nginx timeout — returns HTML
     if (ae.code === 'ETIMEDOUT' || status === 524 || status === 408) {
-      throw new ApiError(
-        status,
-        'The request timed out. The server may be starting up — please try again in a moment.',
-      );
+      throw new ApiError(status, 'The request timed out. The server may be starting up — please try again.');
     }
-
     if (status === 400) throw new ApiError(status, detail || 'Bad request.');
     if (status === 404) throw new ApiError(status, detail || 'Resource not found.');
     if (status === 413) throw new ApiError(status, detail || 'File is too large. Maximum size is 10 MB.');
@@ -95,21 +83,18 @@ function normalise(err: unknown): never {
     if (status === 500) throw new ApiError(status, detail || 'Internal server error. Please try again.');
     if (status === 502) throw new ApiError(status, detail || 'Backend is temporarily unavailable (502). Please try again.');
     if (status === 503) throw new ApiError(status, detail || 'Backend is starting up. Please wait a moment and try again.');
-
     throw new ApiError(status, detail || `Unexpected error (${status}).`);
   }
-  // Non-Axios error (e.g. JSON parse failure)
   if (err instanceof Error) throw new ApiError(0, err.message);
   throw new ApiError(0, 'An unexpected error occurred.');
 }
 
-// ─── Document endpoints ──────────────────────────────────────────────────────
+// ─── Document endpoints ───────────────────────────────────────────────────────
 
 /**
  * Upload a file.
- * - Uses a 90s timeout to survive Render cold-starts.
- * - onProgress reports NETWORK transfer only (0–95%).
- *   The remaining 5–100% is represented by the backend status stages.
+ * X-Client-ID is injected by the interceptor — the backend attaches it
+ * to the document row so only this browser can see/delete/query it.
  */
 export async function uploadDocument(
   file: File,
@@ -119,11 +104,9 @@ export async function uploadDocument(
   form.append('file', file);
   try {
     const { data } = await client.post<Document>('/upload', form, {
-      // Generous timeout: covers cold-start (30–60s) + file transfer
       timeout: 90_000,
       onUploadProgress: (e: AxiosProgressEvent) => {
         if (onProgress && e.total && e.total > 0) {
-          // Cap at 95 — the remaining 5% represents "waiting for server response"
           onProgress(Math.min(Math.round((e.loaded * 100) / e.total), 95));
         }
       },
@@ -134,7 +117,6 @@ export async function uploadDocument(
   }
 }
 
-/** Poll GET /documents/{id}/status */
 export async function getDocumentStatus(docId: string): Promise<DocumentStatusResponse> {
   try {
     const { data } = await client.get<DocumentStatusResponse>(`/documents/${docId}/status`);
@@ -144,7 +126,6 @@ export async function getDocumentStatus(docId: string): Promise<DocumentStatusRe
   }
 }
 
-/** List all documents */
 export async function getDocuments(): Promise<Document[]> {
   try {
     const { data } = await client.get<Document[]>('/documents');
@@ -154,7 +135,6 @@ export async function getDocuments(): Promise<Document[]> {
   }
 }
 
-/** Delete a document and its vectors */
 export async function deleteDocument(docId: string): Promise<void> {
   try {
     await client.delete(`/documents/${docId}`);
@@ -163,7 +143,7 @@ export async function deleteDocument(docId: string): Promise<void> {
   }
 }
 
-// ─── Chat endpoints ──────────────────────────────────────────────────────────
+// ─── Chat endpoints ───────────────────────────────────────────────────────────
 
 export async function sendChat(req: ChatRequest): Promise<ChatResponse> {
   try {
@@ -183,7 +163,7 @@ export async function sendAgentChat(req: ChatRequest): Promise<ChatResponse> {
   }
 }
 
-// ─── History endpoints ───────────────────────────────────────────────────────
+// ─── History endpoints ────────────────────────────────────────────────────────
 
 export async function getHistory(sessionId: string): Promise<HistoryItem[]> {
   try {
@@ -202,7 +182,10 @@ export async function clearHistory(sessionId: string): Promise<void> {
   }
 }
 
-// ─── Health endpoints ────────────────────────────────────────────────────────
+// ─── Health endpoints ─────────────────────────────────────────────────────────
+
+// Health endpoints do NOT require X-Client-ID — backend allows them without it.
+// We still send it via the interceptor (harmless), but the routes don't depend on it.
 
 export async function getHealth(): Promise<{ status: string }> {
   try {
