@@ -99,7 +99,6 @@ def _run_ingestion_subprocess(
     client_id: str,
     tmp_path: str,
     filename: str,
-    db_url: str,
     qdrant_url: str,
     qdrant_api_key: str,
     qdrant_collection: str,
@@ -264,7 +263,6 @@ def _launch_ingestion_subprocess(
         future = _POOL.submit(
             _run_ingestion_subprocess,
             doc_id, client_id, tmp_path, filename,
-            settings.DATABASE_URL,
             settings.QDRANT_URL,
             settings.QDRANT_API_KEY,
             settings.QDRANT_COLLECTION,
