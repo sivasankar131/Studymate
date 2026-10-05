@@ -1,27 +1,25 @@
 /**
  * useChat – manages a single chat session.
  *
- * Responsibilities:
- *  - Maintain the local message list (user + assistant turns)
- *  - Send questions to POST /chat or POST /agent/chat
- *  - Load previous history from GET /history/{session_id} on mount
- *  - Clear conversation via DELETE /history/{session_id} + rotate session id
- *  - Track loading / error state
+ * State isolation: chat error state is completely independent of
+ * document loading, upload, or health errors.  A cancelled documents
+ * request can never set chatError.
+ *
+ * Cancellation:
+ *  - sendMessage() creates an AbortController per request.
+ *    If the component unmounts mid-request the error is silently ignored.
+ *  - History load on mount is also cancellation-aware.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import * as api from '@/services/api';
-import {
-  getOrCreateSessionId,
-  rotateSessionId,
-} from '@/utils/session';
+import { isCancelledError } from '@/services/api';
+import { getOrCreateSessionId, rotateSessionId } from '@/utils/session';
 import type { ChatMessage, ChatMode } from '@/types';
 
 export interface UseChatOptions {
-  /** Restrict answers to one document. Pass undefined for all documents. */
   docId?: string;
-  /** 'rag' = plain RAG, 'agent' = tool-using agent */
   mode?: ChatMode;
 }
 
@@ -39,98 +37,121 @@ export interface UseChatReturn {
 }
 
 export function useChat(options: UseChatOptions = {}): UseChatReturn {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages]   = useState<ChatMessage[]>([]);
   const [sessionId, setSessionId] = useState<string>(getOrCreateSessionId);
-  const [thinking, setThinking] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [thinking, setThinking]   = useState(false);
+  const [error, setError]         = useState<string | null>(null);
   const [activeDocId, setActiveDocId] = useState<string | undefined>(options.docId);
-  const [activeMode, setActiveMode] = useState<ChatMode>(options.mode ?? 'rag');
+  const [activeMode, setActiveMode]   = useState<ChatMode>(options.mode ?? 'rag');
 
-  // Keep a ref so async callbacks always see the latest sessionId
-  const sessionIdRef = useRef(sessionId);
+  const sessionIdRef  = useRef(sessionId);
+  const isMounted     = useRef(true);
+  // Abort controller for the current in-flight sendMessage request
+  const chatAbortRef  = useRef<AbortController | null>(null);
+
   useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
 
-  /** Hydrate messages from server history on mount */
+  // ── Cleanup on unmount ────────────────────────────────────────────────────
   useEffect(() => {
-    let cancelled = false;
+    isMounted.current = true;
+    return () => {
+      isMounted.current = false;
+      // Abort any in-flight chat request when navigating away
+      if (chatAbortRef.current) chatAbortRef.current.abort();
+    };
+  }, []);
+
+  // ── History hydration ─────────────────────────────────────────────────────
+  useEffect(() => {
+    const controller = new AbortController();
     async function loadHistory() {
       try {
-        const items = await api.getHistory(sessionId);
-        if (cancelled) return;
-        const msgs: ChatMessage[] = items.map((item) => ({
-          id: uuidv4(),
-          role: item.role,
-          content: item.content,
-          sources: item.sources ?? [],
+        const items = await api.getHistory(sessionId, controller.signal);
+        if (controller.signal.aborted || !isMounted.current) return;
+        setMessages(items.map(item => ({
+          id:        uuidv4(),
+          role:      item.role,
+          content:   item.content,
+          sources:   item.sources ?? [],
           timestamp: new Date(item.created_at),
-        }));
-        setMessages(msgs);
-      } catch {
-        // History load failure is non-critical – start fresh
+        })));
+      } catch (err) {
+        // Cancelled (unmount) or network — both non-critical for history
+        if (isCancelledError(err) || controller.signal.aborted) return;
+        // History load failure is non-critical — start fresh
       }
     }
     void loadHistory();
-    return () => { cancelled = true; };
+    return () => controller.abort();
   }, [sessionId]);
 
+  // ── sendMessage ───────────────────────────────────────────────────────────
   const sendMessage = useCallback(async (question: string) => {
     const trimmed = question.trim();
     if (!trimmed) return;
 
     setError(null);
 
-    // Optimistically add the user message
     const userMsg: ChatMessage = {
-      id: uuidv4(),
-      role: 'user',
-      content: trimmed,
+      id:        uuidv4(),
+      role:      'user',
+      content:   trimmed,
       timestamp: new Date(),
     };
-    setMessages((prev) => [...prev, userMsg]);
+    setMessages(prev => [...prev, userMsg]);
     setThinking(true);
+
+    // Abort any previous request still in flight
+    if (chatAbortRef.current) chatAbortRef.current.abort();
+    const controller = new AbortController();
+    chatAbortRef.current = controller;
 
     try {
       const req = {
         session_id: sessionIdRef.current,
-        question: trimmed,
-        doc_id: activeDocId,
+        question:   trimmed,
+        doc_id:     activeDocId,
       };
 
-      const resp =
-        activeMode === 'agent'
-          ? await api.sendAgentChat(req)
-          : await api.sendChat(req);
+      const resp = activeMode === 'agent'
+        ? await api.sendAgentChat(req, controller.signal)
+        : await api.sendChat(req, controller.signal);
 
-      const aiMsg: ChatMessage = {
-        id: uuidv4(),
-        role: 'assistant',
-        content: resp.answer,
-        sources: resp.sources,
+      // If cancelled (user navigated away mid-request) — drop silently
+      if (controller.signal.aborted || !isMounted.current) return;
+
+      setMessages(prev => [...prev, {
+        id:         uuidv4(),
+        role:       'assistant',
+        content:    resp.answer,
+        sources:    resp.sources,
         tools_used: resp.tools_used,
-        timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, aiMsg]);
+        timestamp:  new Date(),
+      }]);
     } catch (err) {
+      // Cancelled — silently discard (user navigated away)
+      if (isCancelledError(err) || controller.signal.aborted) return;
+      if (!isMounted.current) return;
+
       const msg = err instanceof Error ? err.message : 'Something went wrong.';
       setError(msg);
-      // Add an error message into the chat so the user sees it inline
-      const errMsg: ChatMessage = {
-        id: uuidv4(),
-        role: 'assistant',
-        content: `⚠️ ${msg}`,
+      setMessages(prev => [...prev, {
+        id:        uuidv4(),
+        role:      'assistant',
+        content:   `⚠️ ${msg}`,
         timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, errMsg]);
+      }]);
     } finally {
-      setThinking(false);
+      if (isMounted.current) setThinking(false);
     }
   }, [activeDocId, activeMode]);
 
+  // ── clearConversation ─────────────────────────────────────────────────────
   const clearConversation = useCallback(async () => {
     try {
       await api.clearHistory(sessionIdRef.current);
     } catch {
-      // Ignore – even if the server clear fails, reset the local UI
+      // Non-critical — clear local UI regardless
     }
     const newId = rotateSessionId();
     setSessionId(newId);
@@ -138,24 +159,12 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
     setError(null);
   }, []);
 
-  const setDocId = useCallback((id: string | undefined) => {
-    setActiveDocId(id);
-  }, []);
-
-  const setMode = useCallback((mode: ChatMode) => {
-    setActiveMode(mode);
-  }, []);
+  const setDocId = useCallback((id: string | undefined) => setActiveDocId(id), []);
+  const setMode  = useCallback((mode: ChatMode) => setActiveMode(mode), []);
 
   return {
-    messages,
-    sessionId,
-    thinking,
-    error,
-    sendMessage,
-    clearConversation,
-    setDocId,
-    setMode,
-    activeDocId,
-    activeMode,
+    messages, sessionId, thinking, error,
+    sendMessage, clearConversation,
+    setDocId, setMode, activeDocId, activeMode,
   };
 }

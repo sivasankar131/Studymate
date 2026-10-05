@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import * as api from '@/services/api';
+import { isCancelledError } from '@/services/api';
 import { validateFile } from '@/utils/validation';
 import type { Document, UploadFile } from '@/types';
 
@@ -196,6 +197,8 @@ export function useUpload(): UseUploadReturn {
       startPolling(id, doc.id, onSuccess);
 
     } catch (err) {
+      // Cancelled (component unmounted during upload) — don't show as error
+      if (isCancelledError(err)) return;
       updateSlot(id, {
         status: 'error',
         error: err instanceof Error ? err.message : 'Upload failed. Please try again.',

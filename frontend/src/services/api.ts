@@ -4,8 +4,17 @@
  * Every request automatically carries:
  *   X-Client-ID: <stable browser UUID from localStorage>
  *
- * This header is the sole mechanism for browser-level data isolation.
- * The backend rejects any request that lacks a valid UUID v4 in this header.
+ * Cancellation contract
+ * ─────────────────────
+ * When an Axios request is cancelled (AbortController.abort() or
+ * axios.CancelToken), the error has code === 'ERR_CANCELED' or
+ * name === 'CanceledError'.  normalise() detects this and throws a
+ * CancelledError instead of an ApiError so callers can distinguish:
+ *
+ *   catch (err) {
+ *     if (isCancelledError(err)) return;   // silent — expected lifecycle
+ *     // real error handling
+ *   }
  */
 
 import axios, { AxiosError, type AxiosProgressEvent } from 'axios';
@@ -28,16 +37,39 @@ const client = axios.create({
   headers: { Accept: 'application/json' },
 });
 
-/**
- * Request interceptor — injects X-Client-ID before every request.
- * Using an interceptor (not a static default header) guarantees the value
- * is read fresh from localStorage on each call, so it stays correct even
- * if resetClientId() is called during a session.
- */
 client.interceptors.request.use(config => {
   config.headers['X-Client-ID'] = getClientId();
   return config;
 });
+
+// ─── Cancellation sentinel ────────────────────────────────────────────────────
+
+/**
+ * Thrown when a request was intentionally cancelled (component unmount,
+ * navigation, or explicit abort).  Callers should treat this as a no-op.
+ */
+export class CancelledError extends Error {
+  constructor() {
+    super('Request cancelled');
+    this.name = 'CancelledError';
+  }
+}
+
+/** Returns true when `err` represents an intentional cancellation. */
+export function isCancelledError(err: unknown): err is CancelledError {
+  if (err instanceof CancelledError) return true;
+  // DOMException AbortError (native fetch / AbortController)
+  if (err instanceof DOMException && err.name === 'AbortError') return true;
+  if (err instanceof Error) {
+    if (err.name === 'CanceledError') return true;   // axios v1 spelling
+    if (err.name === 'AbortError')    return true;
+  }
+  if (axios.isAxiosError(err)) {
+    const code = (err as AxiosError).code;
+    if (code === 'ERR_CANCELED') return true;        // axios cancel via AbortSignal
+  }
+  return false;
+}
 
 // ─── Error normalisation ──────────────────────────────────────────────────────
 
@@ -64,6 +96,9 @@ function extractDetail(data: unknown): string | null {
 }
 
 function normalise(err: unknown): never {
+  // ── Intentional cancellation — not a real error ──────────────────────────
+  if (isCancelledError(err)) throw new CancelledError();
+
   if (axios.isAxiosError(err)) {
     const ae     = err as AxiosError;
     const status = ae.response?.status ?? 0;
@@ -91,20 +126,17 @@ function normalise(err: unknown): never {
 
 // ─── Document endpoints ───────────────────────────────────────────────────────
 
-/**
- * Upload a file.
- * X-Client-ID is injected by the interceptor — the backend attaches it
- * to the document row so only this browser can see/delete/query it.
- */
 export async function uploadDocument(
   file: File,
   onProgress?: (pct: number) => void,
+  signal?: AbortSignal,
 ): Promise<Document> {
   const form = new FormData();
   form.append('file', file);
   try {
     const { data } = await client.post<Document>('/upload', form, {
       timeout: 90_000,
+      signal,
       onUploadProgress: (e: AxiosProgressEvent) => {
         if (onProgress && e.total && e.total > 0) {
           onProgress(Math.min(Math.round((e.loaded * 100) / e.total), 95));
@@ -117,18 +149,24 @@ export async function uploadDocument(
   }
 }
 
-export async function getDocumentStatus(docId: string): Promise<DocumentStatusResponse> {
+export async function getDocumentStatus(
+  docId: string,
+  signal?: AbortSignal,
+): Promise<DocumentStatusResponse> {
   try {
-    const { data } = await client.get<DocumentStatusResponse>(`/documents/${docId}/status`);
+    const { data } = await client.get<DocumentStatusResponse>(
+      `/documents/${docId}/status`,
+      { signal },
+    );
     return data;
   } catch (err) {
     normalise(err);
   }
 }
 
-export async function getDocuments(): Promise<Document[]> {
+export async function getDocuments(signal?: AbortSignal): Promise<Document[]> {
   try {
-    const { data } = await client.get<Document[]>('/documents');
+    const { data } = await client.get<Document[]>('/documents', { signal });
     return data;
   } catch (err) {
     normalise(err);
@@ -145,18 +183,30 @@ export async function deleteDocument(docId: string): Promise<void> {
 
 // ─── Chat endpoints ───────────────────────────────────────────────────────────
 
-export async function sendChat(req: ChatRequest): Promise<ChatResponse> {
+export async function sendChat(
+  req: ChatRequest,
+  signal?: AbortSignal,
+): Promise<ChatResponse> {
   try {
-    const { data } = await client.post<ChatResponse>('/chat', req, { timeout: 120_000 });
+    const { data } = await client.post<ChatResponse>('/chat', req, {
+      timeout: 120_000,
+      signal,
+    });
     return data;
   } catch (err) {
     normalise(err);
   }
 }
 
-export async function sendAgentChat(req: ChatRequest): Promise<ChatResponse> {
+export async function sendAgentChat(
+  req: ChatRequest,
+  signal?: AbortSignal,
+): Promise<ChatResponse> {
   try {
-    const { data } = await client.post<ChatResponse>('/agent/chat', req, { timeout: 120_000 });
+    const { data } = await client.post<ChatResponse>('/agent/chat', req, {
+      timeout: 120_000,
+      signal,
+    });
     return data;
   } catch (err) {
     normalise(err);
@@ -165,9 +215,12 @@ export async function sendAgentChat(req: ChatRequest): Promise<ChatResponse> {
 
 // ─── History endpoints ────────────────────────────────────────────────────────
 
-export async function getHistory(sessionId: string): Promise<HistoryItem[]> {
+export async function getHistory(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<HistoryItem[]> {
   try {
-    const { data } = await client.get<HistoryItem[]>(`/history/${sessionId}`);
+    const { data } = await client.get<HistoryItem[]>(`/history/${sessionId}`, { signal });
     return data;
   } catch (err) {
     normalise(err);
@@ -184,21 +237,18 @@ export async function clearHistory(sessionId: string): Promise<void> {
 
 // ─── Health endpoints ─────────────────────────────────────────────────────────
 
-// Health endpoints do NOT require X-Client-ID — backend allows them without it.
-// We still send it via the interceptor (harmless), but the routes don't depend on it.
-
-export async function getHealth(): Promise<{ status: string }> {
+export async function getHealth(signal?: AbortSignal): Promise<{ status: string }> {
   try {
-    const { data } = await client.get<{ status: string }>('/health');
+    const { data } = await client.get<{ status: string }>('/health', { signal });
     return data;
   } catch (err) {
     normalise(err);
   }
 }
 
-export async function getHealthReady(): Promise<HealthReady> {
+export async function getHealthReady(signal?: AbortSignal): Promise<HealthReady> {
   try {
-    const { data } = await client.get<HealthReady>('/health/ready');
+    const { data } = await client.get<HealthReady>('/health/ready', { signal });
     return data;
   } catch (err) {
     normalise(err);

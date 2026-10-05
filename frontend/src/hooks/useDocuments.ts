@@ -1,36 +1,36 @@
 /**
  * useDocuments – manages the list of uploaded documents.
  *
- * Polling strategy (runs only when ≥1 document is in-progress)
- * ─────────────────────────────────────────────────────────────
- * - Exponential backoff: 2s → 4s → 8s → 15s → 30s cap
- * - Hard stop after MAX_POLL_ATTEMPTS attempts
- * - Hard stop after MAX_POLL_DURATION_MS wall-clock time
- * - Exactly one timer active at a time (ref-guarded, cleaned on unmount)
- * - Stops immediately when all documents reach a terminal state
- * - HTTP errors (429/5xx/network) are backed off silently
+ * Cancellation contract
+ * ─────────────────────
+ * Every GET /documents call carries an AbortSignal tied to an AbortController
+ * that is aborted on component unmount.  If a request is cancelled (because
+ * the user navigated away), isCancelledError() returns true and the error is
+ * silently discarded — no setError(), no pollTimedOut, no state update at all.
  *
- * Browser-isolation:  X-Client-ID is injected by the Axios interceptor in
- * api.ts — this hook never needs to handle it explicitly.
+ * Polling strategy (runs only while ≥1 doc is in-progress)
+ * ──────────────────────────────────────────────────────────
+ * - Exponential backoff: 2 s → 4 s → 8 s → 15 s → 30 s cap (±10% jitter)
+ * - Hard stop after MAX_POLL_ATTEMPTS
+ * - Hard stop after MAX_POLL_DURATION_MS wall-clock time
+ * - Exactly one timer active at a time
+ * - Cleans up timer AND aborts in-flight request on unmount
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from '@/services/api';
+import { isCancelledError } from '@/services/api';
 import type { Document } from '@/types';
 
-// ── Polling configuration ─────────────────────────────────────────────────────
+const INITIAL_DELAY_MS     =  2_000;
+const MAX_DELAY_MS         = 30_000;
+const MAX_POLL_ATTEMPTS    = 40;
+const MAX_POLL_DURATION_MS = 10 * 60 * 1000;
 
-const INITIAL_DELAY_MS    =  2_000;   // 2 s first retry
-const MAX_DELAY_MS        = 30_000;   // 30 s cap
-const MAX_POLL_ATTEMPTS   = 40;       // ~20 min worst case at 30s cap
-const MAX_POLL_DURATION_MS = 10 * 60 * 1000;  // 10 min hard wall
-
-/** States that mean the document is still being processed */
 const IN_PROGRESS = new Set(['queued', 'processing', 'indexing']);
 
 function nextDelay(attempt: number): number {
-  // Exponential backoff with a small random jitter (±10%) to avoid thundering herd
-  const base  = Math.min(INITIAL_DELAY_MS * Math.pow(2, attempt - 1), MAX_DELAY_MS);
+  const base   = Math.min(INITIAL_DELAY_MS * Math.pow(2, attempt - 1), MAX_DELAY_MS);
   const jitter = base * 0.1 * (Math.random() * 2 - 1);
   return Math.round(base + jitter);
 }
@@ -39,7 +39,6 @@ export interface UseDocumentsReturn {
   documents: Document[];
   loading: boolean;
   error: string | null;
-  /** Set when polling stops due to hitting the max duration/attempt limit */
   pollTimedOut: boolean;
   refresh: () => Promise<void>;
   deleteDocument: (id: string) => Promise<void>;
@@ -47,16 +46,19 @@ export interface UseDocumentsReturn {
 }
 
 export function useDocuments(): UseDocumentsReturn {
-  const [documents, setDocuments]     = useState<Document[]>([]);
-  const [loading, setLoading]         = useState(true);
-  const [error, setError]             = useState<string | null>(null);
-  const [deletingId, setDeletingId]   = useState<string | null>(null);
+  const [documents, setDocuments]       = useState<Document[]>([]);
+  const [loading, setLoading]           = useState(true);
+  const [error, setError]               = useState<string | null>(null);
+  const [deletingId, setDeletingId]     = useState<string | null>(null);
   const [pollTimedOut, setPollTimedOut] = useState(false);
 
-  const timerRef      = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const isMounted     = useRef(true);
-  const attemptRef    = useRef(0);
-  const pollStartRef  = useRef<number | null>(null);
+  const timerRef       = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const abortRef       = useRef<AbortController | null>(null);
+  const isMounted      = useRef(true);
+  const attemptRef     = useRef(0);
+  const pollStartRef   = useRef<number | null>(null);
+
+  // ── helpers ──────────────────────────────────────────────────────────────
 
   const stopPolling = useCallback(() => {
     if (timerRef.current !== null) {
@@ -65,70 +67,73 @@ export function useDocuments(): UseDocumentsReturn {
     }
   }, []);
 
+  const abortCurrentRequest = useCallback(() => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+  }, []);
+
   const schedulePoll = useCallback((fetchFn: () => Promise<void>) => {
     stopPolling();
-    const attempt = attemptRef.current;
-
-    // Hard stop: too many attempts
-    if (attempt >= MAX_POLL_ATTEMPTS) {
+    if (!isMounted.current) return;
+    if (attemptRef.current >= MAX_POLL_ATTEMPTS) { setPollTimedOut(true); return; }
+    if (pollStartRef.current !== null &&
+        Date.now() - pollStartRef.current >= MAX_POLL_DURATION_MS) {
       setPollTimedOut(true);
       return;
     }
-
-    // Hard stop: wall-clock duration exceeded
-    if (pollStartRef.current !== null) {
-      const elapsed = Date.now() - pollStartRef.current;
-      if (elapsed >= MAX_POLL_DURATION_MS) {
-        setPollTimedOut(true);
-        return;
-      }
-    }
-
-    const delay = nextDelay(attempt + 1);
+    const delay = nextDelay(attemptRef.current + 1);
     timerRef.current = setTimeout(() => {
       attemptRef.current += 1;
       void fetchFn();
     }, delay);
   }, [stopPolling]);
 
+  // ── main fetch ────────────────────────────────────────────────────────────
+
   const fetchDocuments = useCallback(async (isBackgroundPoll = false) => {
     if (!isBackgroundPoll) {
       setLoading(true);
       setError(null);
       setPollTimedOut(false);
-      attemptRef.current  = 0;
+      attemptRef.current   = 0;
       pollStartRef.current = null;
     }
 
+    // Create a fresh AbortController for this request
+    abortCurrentRequest();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     try {
-      const docs = await api.getDocuments();
-      if (!isMounted.current) return;
+      const docs = await api.getDocuments(controller.signal);
+
+      // If we were cancelled, bail silently
+      if (controller.signal.aborted || !isMounted.current) return;
 
       setDocuments(docs);
       setError(null);
 
       const hasInProgress = docs.some(d => IN_PROGRESS.has(d.status));
-
       if (hasInProgress) {
-        // Record when we first noticed in-progress docs
-        if (pollStartRef.current === null) {
-          pollStartRef.current = Date.now();
-        }
-        // Use a local ref to fetchDocuments so schedulePoll captures the latest closure
+        if (pollStartRef.current === null) pollStartRef.current = Date.now();
         schedulePoll(() => fetchDocuments(true));
       } else {
-        // All terminal — stop polling and reset counters
         stopPolling();
         attemptRef.current   = 0;
         pollStartRef.current = null;
       }
     } catch (err) {
+      // ── Intentional cancellation — completely silent ─────────────────────
+      if (isCancelledError(err) || controller.signal.aborted) return;
       if (!isMounted.current) return;
+
+      // ── Real network/server error ────────────────────────────────────────
       if (!isBackgroundPoll) {
         setError(err instanceof Error ? err.message : 'Failed to load documents.');
       }
-      // On error during background poll: back off but keep trying
-      // (unless we've hit the hard limits — schedulePoll checks those)
+      // Back off and retry on background poll errors (429, 5xx, transient)
       if (isBackgroundPoll) {
         schedulePoll(() => fetchDocuments(true));
       }
@@ -137,26 +142,32 @@ export function useDocuments(): UseDocumentsReturn {
         setLoading(false);
       }
     }
-  }, [schedulePoll, stopPolling]);
+  }, [abortCurrentRequest, schedulePoll, stopPolling]);
 
-  // Public refresh — resets all counters and does a full reload
+  // ── public refresh ────────────────────────────────────────────────────────
+
   const refresh = useCallback(async () => {
     stopPolling();
+    abortCurrentRequest();
     attemptRef.current   = 0;
     pollStartRef.current = null;
     setPollTimedOut(false);
     await fetchDocuments(false);
-  }, [fetchDocuments, stopPolling]);
+  }, [fetchDocuments, stopPolling, abortCurrentRequest]);
 
-  // Mount / unmount
+  // ── lifecycle ─────────────────────────────────────────────────────────────
+
   useEffect(() => {
     isMounted.current = true;
     void fetchDocuments(false);
     return () => {
       isMounted.current = false;
       stopPolling();
+      abortCurrentRequest();
     };
-  }, [fetchDocuments, stopPolling]);
+  }, [fetchDocuments, stopPolling, abortCurrentRequest]);
+
+  // ── delete ────────────────────────────────────────────────────────────────
 
   const deleteDocument = useCallback(async (id: string) => {
     setDeletingId(id);
