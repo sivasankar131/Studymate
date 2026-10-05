@@ -141,7 +141,7 @@ StudyMate/
 
 01 --- Clone Repository
 
-git clone <>
+git clone <https://github.com/sivasankar131/Studymate.git>
 cd StudyMate
 
 02 --- Backend Setup
