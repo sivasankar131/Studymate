@@ -60,7 +60,10 @@ DOC_ID_KEY    = "metadata.doc_id"
 def get_embeddings():
     """
     Load the fastembed ONNX model once per process — lazily on first use.
-    Falls back with a clear error if fastembed is not installed or fails to load.
+
+    The model is pre-downloaded at build time (see render.yaml buildCommand)
+    so no network download happens during request processing.
+    Falls back with a clear error if fastembed is not installed.
     """
     try:
         from fastembed import TextEmbedding  # noqa: PLC0415
@@ -73,7 +76,15 @@ def get_embeddings():
 
     log.info("[EMBED] loading fastembed model %s …", settings.EMBEDDING_MODEL)
     t0 = time.perf_counter()
-    _model = TextEmbedding(model_name=settings.EMBEDDING_MODEL)
+
+    # Use a fixed cache directory so the pre-downloaded model is found
+    # reliably.  FASTEMBED_CACHE_PATH env var overrides this if set.
+    import os as _os
+    cache_path = _os.environ.get(
+        "FASTEMBED_CACHE_PATH",
+        _os.path.join(_os.path.expanduser("~"), ".cache", "fastembed"),
+    )
+    _model = TextEmbedding(model_name=settings.EMBEDDING_MODEL, cache_dir=cache_path)
     log.info("[EMBED] model loaded in %.2fs", time.perf_counter() - t0)
 
     class _FastEmbedWrapper(Embeddings):
