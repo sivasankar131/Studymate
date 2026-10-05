@@ -6,6 +6,15 @@ import { ErrorMessage } from '@/components/ErrorMessage';
 import { formatDate, fileExtLabel, timeAgo } from '@/utils/format';
 import type { Document } from '@/types';
 
+// Seconds a document has been in-progress before we show a "taking longer" hint
+const SLOW_THRESHOLD_SECS = 60;
+
+function isSlowProcessing(doc: Document): boolean {
+  if (doc.status !== 'processing' && doc.status !== 'indexing' && doc.status !== 'queued') return false;
+  const age = (Date.now() - new Date(doc.created_at).getTime()) / 1000;
+  return age > SLOW_THRESHOLD_SECS;
+}
+
 interface Props {
   documents: Document[];
   loading: boolean;
@@ -203,6 +212,13 @@ export const DocumentList: React.FC<Props> = ({
               {isFailed && doc.error_message && (
                 <p className="mt-1.5 text-xs font-medium text-red-700 leading-relaxed">
                   {doc.error_message}
+                </p>
+              )}
+
+              {/* Slow-processing hint (Render cold start / large file) */}
+              {isProcessing && isSlowProcessing(doc) && (
+                <p className="mt-1.5 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5 leading-relaxed">
+                  ⏳ This is taking longer than usual. The AI model may be loading for the first time — please wait a moment.
                 </p>
               )}
             </div>
