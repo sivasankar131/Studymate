@@ -1,4 +1,11 @@
-"""StudyMate API entry point: app, CORS, routers and startup."""
+"""StudyMate API entry point: app, CORS, routers and startup.
+
+Startup is intentionally lightweight so Render detects the open port quickly:
+  1. Initialize the database (fast – just DDL if needed)
+  2. Ping Qdrant to verify connectivity (fast – no model loading)
+  3. Bind to 0.0.0.0:$PORT  ← Render port scanner passes here
+  4. Everything else (embedding model, LLM) is lazy – loaded on first use
+"""
 import logging
 from contextlib import asynccontextmanager
 
@@ -9,7 +16,7 @@ from sqlalchemy import text
 
 from app.config import settings
 from app.db.database import engine, init_db
-from app.rag.ingest import ensure_collection, get_client
+from app.rag.ingest import get_client
 from app.routes import chat, upload
 
 logging.basicConfig(
@@ -21,39 +28,34 @@ log = logging.getLogger("studymate")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # ── Database ──────────────────────────────────────────────────────────────
+    # ── 1. Database ───────────────────────────────────────────────────────────
     try:
         init_db()
-        log.info("Database initialized (tables created / verified).")
+        log.info("[STARTUP] database ready")
     except Exception:
-        log.exception("Database initialization failed; API will still start.")
+        log.exception("[STARTUP] database initialization failed; API will still start")
 
-    # ── Qdrant collection ─────────────────────────────────────────────────────
+    # ── 2. Qdrant connectivity (lightweight ping only — NO model loading) ─────
+    # We only verify the client can reach Qdrant.
+    # ensure_collection() is intentionally NOT called here because it may
+    # trigger get_embeddings() if the collection doesn't exist yet.
+    # The collection will be created on first upload instead.
     try:
-        ensure_collection()
-        log.info("Qdrant collection ready.")
-    except Exception:
-        log.exception(
-            "Could not prepare Qdrant collection at startup; "
-            "will retry on first use."
-        )
-
-    # ── Warm-up embedding model (best-effort) ─────────────────────────────────
-    # Pre-loading the model here means the first upload won't pay the ~20-30s
-    # cold-start cost.  We catch all exceptions so a model download failure
-    # doesn't prevent the API from starting.
-    try:
-        from app.rag.ingest import get_embeddings
-        get_embeddings()          # cached by @lru_cache – safe to call multiple times
-        log.info("Embedding model warm-up complete.")
+        get_client().get_collections()   # cheap HTTP GET — no embeddings involved
+        log.info("[STARTUP] qdrant reachable")
     except Exception:
         log.warning(
-            "Embedding model warm-up failed (non-fatal); "
-            "it will be loaded on first upload.",
+            "[STARTUP] could not reach Qdrant at startup; will retry on first use",
             exc_info=True,
         )
 
+    # ── 3. Server is now ready to accept requests ─────────────────────────────
+    # The embedding model (BAAI/bge-small-en-v1.5) is NOT loaded here.
+    # It will be loaded lazily on the first document upload/retrieval.
+    log.info("[STARTUP] application ready — listening on 0.0.0.0:$PORT")
+
     yield
+    # Nothing to clean up on shutdown.
 
 
 app = FastAPI(
@@ -82,13 +84,14 @@ def root():
 
 @app.get("/health", tags=["health"])
 def health():
-    """Liveness check – does not touch any external service."""
+    """Liveness check — returns immediately, no external calls."""
     return {"status": "ok"}
 
 
 @app.get("/health/ready", tags=["health"])
 def ready():
-    """Readiness check: verifies Postgres and Qdrant are reachable."""
+    """Readiness check: verifies Postgres and Qdrant are reachable.
+    Does NOT load the embedding model."""
     checks: dict[str, str] = {}
     try:
         with engine.connect() as conn:

@@ -3,17 +3,17 @@ fastapi>=0.115
 uvicorn[standard]>=0.30
 python-multipart>=0.0.9
 
-# ── Settings / validation ──────────────────────────────────────────────────────
+# ── Settings / validation ─────────────────────────────────────────────────────
 pydantic-settings>=2.4
 
-# ── Database ───────────────────────────────────────────────────────────────────
+# ── Database ──────────────────────────────────────────────────────────────────
 sqlalchemy>=2.0
 pg8000>=1.31
 
-# ── Document parsing ───────────────────────────────────────────────────────────
+# ── Document parsing ──────────────────────────────────────────────────────────
 pypdf>=4.3
 
-# ── LangChain core + integrations ─────────────────────────────────────────────
+# ── LangChain core + integrations ────────────────────────────────────────────
 langchain>=0.3
 langchain-core>=0.3
 langchain-text-splitters>=0.3
@@ -21,50 +21,21 @@ langchain-groq>=0.2
 langchain-huggingface>=0.1
 langchain-qdrant>=0.2
 
-# ── LangGraph (agent) ─────────────────────────────────────────────────────────
+# ── LangGraph (agent) ────────────────────────────────────────────────────────
 langgraph>=0.2
 
-# ── Embeddings (HuggingFace) ───────────────────────────────────────────────────
+# ── Embeddings (HuggingFace, CPU-only) ───────────────────────────────────────
+# torch is listed WITHOUT the +cu* CUDA variant so pip installs the small
+# CPU-only wheel (~200 MB) instead of the CUDA stack (~2.5 GB).
+# sentence-transformers requires torch; this keeps Render build fast.
 sentence-transformers>=3.0
 torch>=2.0
+
+# ── HuggingFace utilities ────────────────────────────────────────────────────
 huggingface-hub>=0.24
 
-# ── Vector database ────────────────────────────────────────────────────────────
+# ── Vector database ───────────────────────────────────────────────────────────
 qdrant-client>=1.12
 
-# ── Web search tool ────────────────────────────────────────────────────────────
+# ── Web search tool ───────────────────────────────────────────────────────────
 ddgs>=9.0
-
-
-fastapi
-uvicorn
-langchain
-langchain-core
-langchain-groq
-langchain-huggingface
-langchain-qdrant
-langchain-text-splitters
-qdrant-client
-sentence-transformers
-pypdf
-sqlalchemy
-pg8000
-pydantic-settings
-
-
-fastapi
-uvicorn[standard]
-langchain
-langchain-core
-langchain-groq
-langchain-huggingface
-langchain-qdrant
-langchain-text-splitters
-langgraph
-qdrant-client
-sentence-transformers
-pypdf
-sqlalchemy
-pg8000
-pydantic-settings
-python-multipart
