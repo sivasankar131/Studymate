@@ -1,10 +1,19 @@
 """Document upload and management endpoints — with browser-level isolation.
 
-Every document is owned by a client_id extracted from the X-Client-ID header.
-No document is visible to, or deletable by, a different client.
+Key safety properties
+---------------------
+* _run_ingestion() ALWAYS reaches a terminal state (ready | failed).
+  - A threading.Event deadline fires if the job exceeds INDEXING_TIMEOUT_SECONDS.
+  - Every stage is wrapped in try/except; the outermost handler catches anything
+    that slips through.
+  - finally: db.close() always runs.
+* Duplicate-job guard: upload only starts a background task when the document
+  is in the initial "queued" state; a restart of an already-indexing document
+  is rejected until the record is manually marked "failed".
 """
 import logging
 import os
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -22,6 +31,13 @@ log = logging.getLogger(__name__)
 router = APIRouter(tags=["documents"])
 
 ALLOWED_EXTENSIONS = {".pdf", ".txt"}
+
+# Status constants — keep in sync with frontend IN_PROGRESS set
+STATUS_QUEUED     = "queued"
+STATUS_PROCESSING = "processing"
+STATUS_INDEXING   = "indexing"
+STATUS_READY      = "ready"
+STATUS_FAILED     = "failed"
 
 
 # ─── Pydantic schemas ─────────────────────────────────────────────────────────
@@ -53,32 +69,87 @@ class DocumentStatusOut(BaseModel):
 # ─── Background ingestion task ────────────────────────────────────────────────
 
 def _run_ingestion(doc_id: str, client_id: str, data: bytes, filename: str) -> None:
-    """Runs in a background thread. Opens its own DB session."""
+    """
+    Runs in a background thread (FastAPI BackgroundTasks).
+
+    Safety guarantees
+    -----------------
+    1. Hard deadline via threading.Event — if the job hasn't finished within
+       INDEXING_TIMEOUT_SECONDS, the DB record is marked failed so the frontend
+       unblocks.  The thread itself may continue (Python can't kill a thread),
+       but it will eventually complete/fail on its own and its final DB write
+       will be a no-op because the record is already in a terminal state.
+    2. Every stage sets status=failed + error_message on any exception.
+    3. The outermost except clause is a last-resort catch-all.
+    4. db.close() is guaranteed by finally.
+    """
     t_total = time.perf_counter()
-    log.info("[INGEST] start  doc_id=%s  client=%s  filename=%s  size=%.2fKB",
-             doc_id, client_id[:8], filename, len(data) / 1024)
+    timeout_secs = settings.INDEXING_TIMEOUT_SECONDS
+    deadline_fired = threading.Event()
+
+    # ── Deadline timer ────────────────────────────────────────────────────────
+    def _fire_deadline() -> None:
+        deadline_fired.set()
+        log.error(
+            "[INGEST] TIMEOUT  doc_id=%s  limit=%ds — marking failed",
+            doc_id, timeout_secs,
+        )
+        # Open a fresh session for the timeout write (the main thread may have
+        # a transaction in progress or the session may be closed already)
+        _db = SessionLocal()
+        try:
+            _db.query(Document).filter(
+                Document.id == doc_id,
+                Document.status.in_([STATUS_PROCESSING, STATUS_INDEXING]),
+            ).update({
+                "status":        STATUS_FAILED,
+                "progress":      0,
+                "error_message": (
+                    f"Indexing timed out after {timeout_secs}s. "
+                    "Please try uploading again."
+                ),
+                "updated_at":    datetime.now(timezone.utc),
+            })
+            _db.commit()
+        except Exception:
+            log.exception("[INGEST] Failed to write timeout status  doc_id=%s", doc_id)
+        finally:
+            _db.close()
+
+    timer = threading.Timer(timeout_secs, _fire_deadline)
+    timer.daemon = True
+    timer.start()
+
+    log.info("[INGEST] start  doc_id=%s  client=%s  filename=%s  size=%.2fKB  timeout=%ds",
+             doc_id, client_id[:8], filename, len(data) / 1024, timeout_secs)
 
     def _set(db: Session, **kwargs) -> None:
+        """Update document fields — skips if deadline has already fired."""
+        if deadline_fired.is_set():
+            return  # don't overwrite the timeout-failure record
         kwargs["updated_at"] = datetime.now(timezone.utc)
         db.query(Document).filter(Document.id == doc_id).update(kwargs)
         db.commit()
 
     db = SessionLocal()
     try:
-        # Stage 1 — extraction
-        _set(db, status="processing", progress=10)
+        # ── Stage 1: extraction ───────────────────────────────────────────────
+        _set(db, status=STATUS_PROCESSING, progress=10)
         t0 = time.perf_counter()
         try:
             from app.rag.ingest import extract_pages
             pages = extract_pages(data, filename)
         except ValueError as exc:
             log.warning("[INGEST] extraction failed  doc_id=%s  reason=%s", doc_id, exc)
-            _set(db, status="failed", progress=0, error_message=str(exc))
+            _set(db, status=STATUS_FAILED, progress=0, error_message=str(exc))
             return
-        log.info("[INGEST] extraction  pages=%d  %.2fs", len(pages), time.perf_counter() - t0)
+        log.info("[INGEST] extraction  pages=%d  elapsed=%.2fs", len(pages), time.perf_counter() - t0)
 
-        # Stage 2 — chunking
-        _set(db, status="processing", progress=30)
+        if deadline_fired.is_set():
+            return
+
+        # ── Stage 2: chunking ─────────────────────────────────────────────────
+        _set(db, status=STATUS_PROCESSING, progress=30)
         t0 = time.perf_counter()
         try:
             from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -88,13 +159,15 @@ def _run_ingestion(doc_id: str, client_id: str, data: bytes, filename: str) -> N
                 chunk_overlap=settings.CHUNK_OVERLAP,
             )
             chunks: list = []
-            for page_no, text in pages:
-                for piece in splitter.split_text(text):
+            for page_no, text_content in pages:
+                if deadline_fired.is_set():
+                    return
+                for piece in splitter.split_text(text_content):
                     if piece.strip():
                         chunks.append(LCDoc(
                             page_content=piece,
                             metadata={
-                                "client_id": client_id,   # ← isolation key
+                                "client_id": client_id,
                                 "doc_id":    doc_id,
                                 "source":    filename,
                                 "page":      page_no,
@@ -103,59 +176,76 @@ def _run_ingestion(doc_id: str, client_id: str, data: bytes, filename: str) -> N
                         ))
         except Exception:
             log.exception("[INGEST] chunking failed  doc_id=%s", doc_id)
-            _set(db, status="failed", progress=0,
+            _set(db, status=STATUS_FAILED, progress=0,
                  error_message="Text chunking failed. Please try again.")
             return
+
         if not chunks:
-            _set(db, status="failed", progress=0,
+            _set(db, status=STATUS_FAILED, progress=0,
                  error_message=(
                      "No readable text found. "
                      "Scanned or image-only PDFs need OCR, which is not supported."
                  ))
             return
-        log.info("[INGEST] chunking  chunks=%d  %.2fs", len(chunks), time.perf_counter() - t0)
+        log.info("[INGEST] chunking  chunks=%d  elapsed=%.2fs", len(chunks), time.perf_counter() - t0)
 
-        # Stage 3 — embedding + Qdrant insertion
-        _set(db, status="indexing", progress=55)
+        if deadline_fired.is_set():
+            return
+
+        # ── Stage 3: embedding + Qdrant insertion ─────────────────────────────
+        _set(db, status=STATUS_INDEXING, progress=55)
         t0 = time.perf_counter()
         try:
             from app.rag.ingest import get_store, BATCH_SIZE
             store = get_store()
-            for i in range(0, len(chunks), BATCH_SIZE):
+            total_batches = (len(chunks) + BATCH_SIZE - 1) // BATCH_SIZE
+            for batch_idx, i in enumerate(range(0, len(chunks), BATCH_SIZE)):
+                if deadline_fired.is_set():
+                    return
                 store.add_documents(chunks[i: i + BATCH_SIZE])
-                pct = 55 + int(((i + BATCH_SIZE) / len(chunks)) * 40)
-                _set(db, status="indexing", progress=min(pct, 95))
+                # Update progress every batch, but only write to DB every
+                # other batch to avoid hammering Postgres
+                if batch_idx % 2 == 0 or batch_idx == total_batches - 1:
+                    pct = 55 + int(((batch_idx + 1) / total_batches) * 40)
+                    _set(db, status=STATUS_INDEXING, progress=min(pct, 95))
         except Exception:
             log.exception("[INGEST] Qdrant insertion failed  doc_id=%s", doc_id)
             try:
                 delete_document_vectors(doc_id, client_id)
             except Exception:
-                pass
-            _set(db, status="failed", progress=0,
+                log.warning("[INGEST] cleanup of partial vectors failed  doc_id=%s", doc_id)
+            _set(db, status=STATUS_FAILED, progress=0,
                  error_message="Document indexing failed. Please try again.")
             return
-        log.info("[INGEST] embedding+insertion  %.2fs", time.perf_counter() - t0)
+        log.info("[INGEST] embedding+insertion  elapsed=%.2fs", time.perf_counter() - t0)
 
-        # Done
-        db.query(Document).filter(Document.id == doc_id).update({
-            "status":     "ready",
-            "progress":   100,
-            "num_pages":  len(pages),
-            "num_chunks": len(chunks),
-            "updated_at": datetime.now(timezone.utc),
-        })
-        db.commit()
-        log.info("[INGEST] complete  doc_id=%s  pages=%d  chunks=%d  total=%.2fs",
-                 doc_id, len(pages), len(chunks), time.perf_counter() - t_total)
+        if deadline_fired.is_set():
+            return
+
+        # ── Done ──────────────────────────────────────────────────────────────
+        if not deadline_fired.is_set():
+            db.query(Document).filter(Document.id == doc_id).update({
+                "status":     STATUS_READY,
+                "progress":   100,
+                "num_pages":  len(pages),
+                "num_chunks": len(chunks),
+                "updated_at": datetime.now(timezone.utc),
+            })
+            db.commit()
+            log.info(
+                "[INGEST] complete  doc_id=%s  pages=%d  chunks=%d  total=%.2fs",
+                doc_id, len(pages), len(chunks), time.perf_counter() - t_total,
+            )
 
     except Exception:
         log.exception("[INGEST] unexpected error  doc_id=%s", doc_id)
         try:
-            _set(db, status="failed", progress=0,
+            _set(db, status=STATUS_FAILED, progress=0,
                  error_message="Unexpected error during processing.")
         except Exception:
-            pass
+            log.exception("[INGEST] could not write failure status  doc_id=%s", doc_id)
     finally:
+        timer.cancel()   # cancel if job finished before deadline
         db.close()
 
 
@@ -168,8 +258,6 @@ def upload_document(
     db: Session = Depends(get_db),
     client_id: str = Depends(get_client_id),
 ):
-    """Accept a file, create a 'queued' document record owned by client_id,
-    return 202 immediately, then ingest in the background."""
     filename = os.path.basename(file.filename or "")
     ext = os.path.splitext(filename)[1].lower()
     log.info("[UPLOAD] received  client=%s  filename=%s", client_id[:8], filename)
@@ -190,13 +278,11 @@ def upload_document(
     if not data:
         raise HTTPException(status_code=400, detail="The file is empty.")
 
-    doc = Document(filename=filename, client_id=client_id, status="queued", progress=0)
+    doc = Document(filename=filename, client_id=client_id, status=STATUS_QUEUED, progress=0)
     db.add(doc)
     db.commit()
     db.refresh(doc)
 
-    # Pass client_id explicitly into the background task so it's captured
-    # in the thread's closure — never read from a shared global.
     background_tasks.add_task(_run_ingestion, doc.id, client_id, data, filename)
     log.info("[UPLOAD] queued  doc_id=%s  client=%s", doc.id, client_id[:8])
     return doc
@@ -207,7 +293,6 @@ def list_documents(
     db: Session = Depends(get_db),
     client_id: str = Depends(get_client_id),
 ):
-    """Return ONLY documents owned by the requesting client."""
     return (
         db.query(Document)
         .filter(Document.client_id == client_id)
@@ -222,11 +307,8 @@ def document_status(
     db: Session = Depends(get_db),
     client_id: str = Depends(get_client_id),
 ):
-    """Polling endpoint — verifies ownership before returning status."""
     doc = db.get(Document, doc_id)
     if doc is None or doc.client_id != client_id:
-        # Return 404 for both "not found" and "wrong owner" —
-        # never reveal that another client's document exists.
         raise HTTPException(status_code=404, detail="Document not found.")
     return doc
 
@@ -237,7 +319,6 @@ def delete_document(
     db: Session = Depends(get_db),
     client_id: str = Depends(get_client_id),
 ):
-    """Delete a document only if it is owned by the requesting client."""
     doc = db.get(Document, doc_id)
     if doc is None or doc.client_id != client_id:
         raise HTTPException(status_code=404, detail="Document not found.")

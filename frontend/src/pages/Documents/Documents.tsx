@@ -6,7 +6,7 @@ import { useDocuments } from '@/hooks/useDocuments';
 import type { Document } from '@/types';
 
 export const DocumentsPage: React.FC = () => {
-  const { documents, loading, error, refresh, deleteDocument, deletingId } = useDocuments();
+  const { documents, loading, error, refresh, deleteDocument, deletingId, pollTimedOut } = useDocuments();
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [showUploader, setShowUploader] = useState(false);
 
@@ -74,6 +74,22 @@ export const DocumentsPage: React.FC = () => {
 
         {deleteError && (
           <ErrorMessage variant="banner" message={deleteError} title="Delete failed" onDismiss={() => setDeleteError(null)}/>
+        )}
+
+        {pollTimedOut && (
+          <div className="flex items-start gap-3 p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-800">
+            <svg className="w-5 h-5 shrink-0 mt-0.5 text-amber-500" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd"/>
+            </svg>
+            <div className="flex-1">
+              <p className="text-sm font-semibold">Indexing is taking longer than expected.</p>
+              <p className="text-xs mt-0.5">The backend may still be processing. You can refresh to check the latest status.</p>
+            </div>
+            <button onClick={() => void refresh()}
+              className="shrink-0 px-3 py-1.5 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-800 text-xs font-semibold transition-colors border border-amber-300">
+              Refresh
+            </button>
+          </div>
         )}
 
         <DocumentList documents={documents} loading={loading} error={error} deletingId={deletingId}

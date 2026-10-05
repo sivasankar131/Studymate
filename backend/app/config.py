@@ -29,11 +29,18 @@ class Settings(BaseSettings):
     TOP_K: int = 5
 
     # ── API behaviour ─────────────────────────────────────────────────────────
-    # FRONTEND_URL accepts a comma-separated list of origins for multi-env support.
-    # Example: "https://ragwise.netlify.app,http://localhost:5173"
-    # On Render, set this to your production Netlify URL only.
     FRONTEND_URL: str = "http://localhost:5173"
     MAX_UPLOAD_MB: int = 10
+
+    # ── Indexing safety ───────────────────────────────────────────────────────
+    # Hard wall: background thread is allowed this many seconds to finish.
+    # After this the thread *may* still run (Python cannot kill a thread),
+    # but the DB record will be marked failed so the UI unblocks.
+    INDEXING_TIMEOUT_SECONDS: int = 300   # 5 minutes
+
+    # Self-healing sweep: documents stuck in "indexing" for longer than this
+    # (likely due to a crashed worker) are marked "failed" automatically.
+    INDEXING_STALE_MINUTES: int = 10
 
     @field_validator("DATABASE_URL")
     @classmethod
@@ -46,20 +53,6 @@ class Settings(BaseSettings):
 
     @property
     def cors_origins(self) -> list[str]:
-        """
-        Parse FRONTEND_URL into a list of allowed CORS origins.
-
-        Rules:
-          - Comma-separated values are all allowed.
-          - Trailing slashes are stripped (browsers never send them in Origin).
-          - Empty entries are ignored.
-
-        On Render, set:
-          FRONTEND_URL=https://ragwise.netlify.app
-
-        For local dev + production:
-          FRONTEND_URL=https://ragwise.netlify.app,http://localhost:5173,http://localhost:5174
-        """
         return [
             o.strip().rstrip("/")
             for o in self.FRONTEND_URL.split(",")

@@ -1,20 +1,20 @@
 """StudyMate API entry point: app, CORS, routers and startup.
 
-Startup is intentionally lightweight so Render detects the open port quickly:
-  1. Initialize the database (fast – just DDL if needed)
-  2. Ping Qdrant to verify connectivity (fast – no model loading)
-  3. Bind to 0.0.0.0:$PORT  ← Render port scanner passes here
-  4. Everything else (embedding model, LLM) is lazy – loaded on first use
+Startup sequence
+----------------
+1. Database init (fast — DDL only if needed)
+2. Qdrant connectivity ping (cheap, no model loading)
+3. Start stale-job watchdog (async background task)
+4. Bind to 0.0.0.0:$PORT  ← Render port scanner passes here
 
-CORS notes:
-  - CORSMiddleware is added FIRST, before any router, so it runs on every
-    request including errors and 404s.
-  - allow_origins is built from FRONTEND_URL env var (comma-separated list).
-  - allow_origins_regex also permits Netlify deploy-preview URLs automatically.
-  - A custom exception handler ensures CORS headers are present even on 500s.
+The stale-job watchdog runs every 60 s and marks as "failed" any document
+that has been stuck in "processing" or "indexing" for longer than
+INDEXING_STALE_MINUTES.  This self-heals records left by crashed workers.
 """
+import asyncio
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,7 +22,8 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app.config import settings
-from app.db.database import engine, init_db
+from app.db.database import SessionLocal, engine, init_db
+from app.db.models import Document
 from app.rag.ingest import get_client
 from app.routes import chat, upload
 
@@ -32,6 +33,67 @@ logging.basicConfig(
 )
 log = logging.getLogger("studymate")
 
+# Status values that mean "still running" — must stay in sync with upload.py
+_IN_FLIGHT_STATUSES = ("processing", "indexing", "queued")
+_WATCHDOG_INTERVAL  = 60   # seconds between sweeps
+
+
+async def _stale_job_watchdog() -> None:
+    """Async task: marks documents stuck in processing/indexing as failed.
+
+    Runs every _WATCHDOG_INTERVAL seconds.  Uses its own DB session so it
+    never interferes with request sessions.  All exceptions are caught so
+    a DB hiccup cannot kill the watchdog loop.
+    """
+    stale_threshold = timedelta(minutes=settings.INDEXING_STALE_MINUTES)
+    log.info(
+        "[WATCHDOG] started — sweep every %ds, stale threshold %dm",
+        _WATCHDOG_INTERVAL, settings.INDEXING_STALE_MINUTES,
+    )
+    while True:
+        try:
+            await asyncio.sleep(_WATCHDOG_INTERVAL)
+        except asyncio.CancelledError:
+            log.info("[WATCHDOG] cancelled — shutting down")
+            return
+
+        try:
+            cutoff = datetime.now(timezone.utc) - stale_threshold
+            db = SessionLocal()
+            try:
+                stale = (
+                    db.query(Document)
+                    .filter(
+                        Document.status.in_(_IN_FLIGHT_STATUSES),
+                        Document.updated_at < cutoff,
+                    )
+                    .all()
+                )
+                if stale:
+                    for doc in stale:
+                        doc.status        = "failed"
+                        doc.progress      = 0
+                        doc.error_message = (
+                            "Indexing timed out or the indexing worker stopped unexpectedly. "
+                            "Please try uploading again."
+                        )
+                        doc.updated_at    = datetime.now(timezone.utc)
+                        log.warning(
+                            "[WATCHDOG] stale document marked failed  "
+                            "doc_id=%s  client=%s  last_updated=%s",
+                            doc.id, doc.client_id[:8] if doc.client_id else "?",
+                            doc.updated_at.isoformat(),
+                        )
+                    db.commit()
+                    log.info("[WATCHDOG] marked %d stale document(s) as failed", len(stale))
+            finally:
+                db.close()
+        except asyncio.CancelledError:
+            log.info("[WATCHDOG] cancelled inside sweep — shutting down")
+            return
+        except Exception:
+            log.exception("[WATCHDOG] sweep error (non-fatal, will retry next cycle)")
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -40,22 +102,31 @@ async def lifespan(_: FastAPI):
         init_db()
         log.info("[STARTUP] database ready")
     except Exception:
-        log.exception("[STARTUP] database initialization failed; API will still start")
+        log.exception("[STARTUP] database init failed; API will still start")
 
-    # ── 2. Qdrant connectivity (lightweight ping only — NO model loading) ─────
+    # ── 2. Qdrant connectivity ────────────────────────────────────────────────
     try:
         get_client().get_collections()
         log.info("[STARTUP] qdrant reachable")
     except Exception:
-        log.warning(
-            "[STARTUP] could not reach Qdrant at startup; will retry on first use",
-            exc_info=True,
-        )
+        log.warning("[STARTUP] qdrant unreachable at startup; will retry on first use",
+                    exc_info=True)
+
+    # ── 3. Stale-job watchdog ─────────────────────────────────────────────────
+    watchdog_task = asyncio.create_task(_stale_job_watchdog())
 
     log.info("[STARTUP] application ready — listening on 0.0.0.0:$PORT")
     log.info("[STARTUP] CORS allowed origins: %s", settings.cors_origins)
 
-    yield
+    yield  # ← server runs here
+
+    # ── Shutdown: cancel watchdog cleanly ─────────────────────────────────────
+    watchdog_task.cancel()
+    try:
+        await watchdog_task
+    except asyncio.CancelledError:
+        pass
+    log.info("[SHUTDOWN] watchdog stopped")
 
 
 app = FastAPI(
@@ -65,12 +136,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# ── CORS ──────────────────────────────────────────────────────────────────────
-# Must be added BEFORE routers so it runs on every request, including errors.
-#
-# allow_origins       – exact origins from FRONTEND_URL env var
-# allow_origin_regex  – also permits Netlify deploy-preview subdomains
-#                       (https://deploy-preview-*--ragwise.netlify.app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -81,17 +146,10 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
-# ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(upload.router)
 app.include_router(chat.router)
 
 
-# ── Global exception handler ──────────────────────────────────────────────────
-# Starlette's CORSMiddleware injects headers on the way OUT.  When an
-# unhandled exception propagates to the ASGI layer it bypasses the normal
-# response path, so CORS headers can be missing.  This handler catches all
-# uncaught exceptions, logs them, and returns a JSON 500 that CORSMiddleware
-# can still annotate (because the handler runs inside the middleware stack).
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     log.exception("Unhandled exception on %s %s", request.method, request.url.path)
@@ -101,8 +159,6 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     )
 
 
-# ── Routes ────────────────────────────────────────────────────────────────────
-
 @app.get("/", tags=["health"])
 def root():
     return {"name": "StudyMate API", "docs": "/docs", "health": "/health"}
@@ -110,13 +166,11 @@ def root():
 
 @app.get("/health", tags=["health"])
 def health():
-    """Liveness check — returns immediately, no external calls."""
     return {"status": "ok"}
 
 
 @app.get("/health/ready", tags=["health"])
 def ready():
-    """Readiness check: verifies Postgres and Qdrant are reachable."""
     checks: dict[str, str] = {}
     try:
         with engine.connect() as conn:

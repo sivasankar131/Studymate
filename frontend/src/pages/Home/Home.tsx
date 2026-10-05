@@ -106,7 +106,7 @@ const AgentIcon = () => (
 // ── Page ───────────────────────────────────────────────────────────────────
 export const HomePage: React.FC = () => {
   const navigate = useNavigate();
-  const { documents, loading, error, refresh, deleteDocument, deletingId } = useDocuments();
+  const { documents, loading, error, refresh, deleteDocument, deletingId, pollTimedOut } = useDocuments();
   const { status, detail } = useHealth(60_000);
   const [showUploader, setShowUploader] = useState(false);
 
@@ -202,6 +202,17 @@ export const HomePage: React.FC = () => {
         </div>
 
         {/* Recent docs */}
+        {/* Poll timeout banner */}
+        {pollTimedOut && (
+          <div className="flex items-center gap-3 p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-sm">
+            <svg className="w-4 h-4 shrink-0 text-amber-500" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M8 1a7 7 0 100 14A7 7 0 008 1zm0 3a.75.75 0 01.75.75v3a.75.75 0 01-1.5 0v-3A.75.75 0 018 4zm0 7.5a1 1 0 110-2 1 1 0 010 2z"/>
+            </svg>
+            <span className="flex-1 font-medium">Indexing is taking longer than expected. <button onClick={() => void refresh()} className="underline hover:no-underline">Refresh</button> to check status.</span>
+          </div>
+        )}
+
+        {/* Recent documents */}
         <div>
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-xs font-bold text-surface-600 uppercase tracking-wider">Recent Documents</h2>
