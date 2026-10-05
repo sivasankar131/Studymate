@@ -20,11 +20,11 @@ const StatCard: React.FC<StatCardProps> = ({ icon, label, value, sub, border, va
   <button onClick={onClick} disabled={!onClick}
     className={`w-full text-left p-4 rounded-2xl border bg-white shadow-sm hover:shadow-card transition-all duration-150 ${border} ${onClick ? 'cursor-pointer' : 'cursor-default'}`}>
     <div className="flex items-start justify-between mb-2">
-      <div className="w-9 h-9 rounded-xl bg-surface-100 flex items-center justify-center text-surface-500">{icon}</div>
+      <div className="w-9 h-9 rounded-xl bg-surface-200 flex items-center justify-center">{icon}</div>
       {sub && <span className="text-[10px] font-semibold text-surface-600 bg-surface-100 px-2 py-0.5 rounded-full">{sub}</span>}
     </div>
     <p className={`text-2xl font-bold ${valueColor}`}>{value}</p>
-    <p className="text-xs font-bold text-surface-600 mt-0.5">{label}</p>
+    <p className="text-xs font-bold text-surface-700 mt-0.5">{label}</p>
   </button>
 );
 
@@ -54,9 +54,9 @@ const FeatureTile: React.FC<FeatureTileProps> = ({ icon, title, desc, action, ac
   </div>
 );
 
-// ── SVG icons for stat cards ───────────────────────────────────────────────
+// ── SVG icons for stat cards — explicit colors, not inherited ─────────────
 const IconDocs = () => (
-  <svg className="w-5 h-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+  <svg className="w-5 h-5 text-brand-600" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
     <path d="M4 17h12a1 1 0 001-1V7l-4-4H4a1 1 0 00-1 1v12a1 1 0 001 1z"/>
     <path d="M13 3v4h4"/>
     <line x1="6" y1="11" x2="12" y2="11"/>
@@ -64,7 +64,7 @@ const IconDocs = () => (
   </svg>
 );
 const IconChunks = () => (
-  <svg className="w-5 h-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+  <svg className="w-5 h-5 text-accent-600" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
     <rect x="3" y="3" width="5" height="5" rx="1"/>
     <rect x="12" y="3" width="5" height="5" rx="1"/>
     <rect x="3" y="12" width="5" height="5" rx="1"/>
@@ -72,13 +72,13 @@ const IconChunks = () => (
   </svg>
 );
 const IconClock = () => (
-  <svg className="w-5 h-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+  <svg className="w-5 h-5 text-emerald-600" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
     <circle cx="10" cy="10" r="7"/>
     <polyline points="10,6 10,10 13,12"/>
   </svg>
 );
 const IconBolt = () => (
-  <svg className="w-5 h-5" viewBox="0 0 20 20" fill="currentColor">
+  <svg className="w-5 h-5 text-amber-600" viewBox="0 0 20 20" fill="currentColor">
     <path d="M11.5 2L5 11h6l-1.5 7L17 9h-6l.5-7z"/>
   </svg>
 );
@@ -142,7 +142,7 @@ export const HomePage: React.FC = () => {
             <h1 className="text-3xl font-bold text-surface-900 leading-tight">
               Welcome to <span className="text-brand-600">StudyMate</span>
             </h1>
-            <p className="text-surface-500 mt-1.5 text-sm leading-relaxed max-w-lg">
+            <p className="text-surface-600 mt-1.5 text-sm leading-relaxed max-w-lg font-medium">
               Upload your documents, ask anything, learn smarter — powered by RAG and Groq LLM.
             </p>
           </div>
@@ -182,7 +182,6 @@ export const HomePage: React.FC = () => {
           <StatCard icon={<IconClock/>}   label="Latest Upload"   value={latestDoc ? timeAgo(latestDoc.created_at) : '—'} border="border-emerald-200" valueColor="text-emerald-600" sub={latestDoc?.filename.slice(0,16)} onClick={latestDoc ? () => navigate('/documents') : undefined}/>
           <StatCard icon={<IconBolt/>}    label="Ask Questions"   value="Chat →"                         border="border-amber-200"   valueColor="text-amber-600"  sub="RAG + Agent" onClick={() => navigate('/chat')}/>
         </div>
-
         {/* Feature tiles */}
         <div>
           <h2 className="text-xs font-bold text-surface-600 uppercase tracking-wider mb-3">What you can do</h2>

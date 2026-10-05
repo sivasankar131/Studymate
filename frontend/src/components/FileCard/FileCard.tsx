@@ -154,7 +154,7 @@ export const FileCard: React.FC<Props> = ({ item, onRemove, onRetry }) => {
           <div className="flex flex-col">
             <span className="text-xs font-bold">{cfg.label}</span>
             {cfg.sublabel && (
-              <span className="text-[11px] font-medium text-surface-600 leading-tight">
+              <span className="text-[11px] font-medium text-surface-700 leading-tight">
                 {cfg.sublabel}
               </span>
             )}
@@ -167,17 +167,17 @@ export const FileCard: React.FC<Props> = ({ item, onRemove, onRetry }) => {
 
         {/* Progress bar */}
         {cfg.showBar && (
-          <div className="mt-2 w-full bg-white/70 rounded-full h-2 overflow-hidden border border-white/50">
+          <div className="mt-2 w-full bg-surface-200 rounded-full h-2 overflow-hidden">
             <div
               className={`h-full bg-gradient-to-r ${cfg.barColor} rounded-full transition-all duration-500`}
-              style={{ width: pct > 0 ? `${pct}%` : '6%' }}  /* show at least a sliver */
+              style={{ width: pct > 0 ? `${pct}%` : '6%' }}
             />
           </div>
         )}
 
         {/* Indeterminate bar for queued state */}
         {status === 'queued' && (
-          <div className="mt-2 w-full bg-white/70 rounded-full h-2 overflow-hidden">
+          <div className="mt-2 w-full bg-surface-200 rounded-full h-2 overflow-hidden">
             <div className="h-full w-1/3 bg-slate-400 rounded-full animate-[pulse_1.5s_ease-in-out_infinite]" />
           </div>
         )}

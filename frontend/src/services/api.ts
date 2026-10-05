@@ -1,11 +1,11 @@
 /**
  * Centralized API service for StudyMate.
- * All backend calls go through this module — no fetch/axios elsewhere.
+ * All backend calls go through this module.
  *
- * Endpoints used:
+ * Endpoints:
  *   POST   /upload
  *   GET    /documents
- *   GET    /documents/{id}/status   ← NEW (status polling)
+ *   GET    /documents/{id}/status
  *   DELETE /documents/{id}
  *   POST   /chat
  *   POST   /agent/chat
@@ -30,8 +30,6 @@ import type {
 
 const client = axios.create({
   baseURL: getApiBase(),
-  // 30 s for normal requests; the upload itself is fast now (returns 202 quickly).
-  // LLM chat calls can take longer — set per-request where needed.
   timeout: 30_000,
   headers: { Accept: 'application/json' },
 });
@@ -49,38 +47,69 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Extract a human-readable message from any error shape.
+ * Handles FastAPI {detail: string}, {detail: [...]} and plain HTML error pages
+ * returned by Render/proxy layers.
+ */
+function extractDetail(data: unknown): string | null {
+  if (!data) return null;
+  if (typeof data === 'string') {
+    // Strip HTML tags from proxy error pages
+    return data.replace(/<[^>]+>/g, '').trim().slice(0, 200) || null;
+  }
+  if (typeof data === 'object') {
+    const d = (data as Record<string, unknown>).detail;
+    if (typeof d === 'string') return d;
+    if (Array.isArray(d)) return d.map((e: unknown) => (e as Record<string, unknown>)?.msg).join('; ');
+  }
+  return null;
+}
+
 function normalise(err: unknown): never {
   if (axios.isAxiosError(err)) {
-    const ae = err as AxiosError<{ detail?: string | unknown }>;
+    const ae = err as AxiosError;
     const status = ae.response?.status ?? 0;
-    const raw = ae.response?.data?.detail;
-    const detail = typeof raw === 'string' ? raw : JSON.stringify(raw);
+    const detail = extractDetail(ae.response?.data) ?? '';
 
+    // Network-level failures (no response received)
     if (status === 0 || ae.code === 'ECONNABORTED' || ae.code === 'ERR_NETWORK') {
       throw new ApiError(
         0,
         'Unable to connect to the StudyMate backend. Please check that the server is running.',
       );
     }
-    if (status === 400) throw new ApiError(status, detail ?? 'Bad request.');
-    if (status === 404) throw new ApiError(status, detail ?? 'Resource not found.');
-    if (status === 413) throw new ApiError(status, detail ?? `File is too large. Maximum size is 10 MB.`);
-    if (status === 422) throw new ApiError(status, detail ?? 'Could not process this file.');
-    if (status === 429)
-      throw new ApiError(status, detail ?? 'The AI service is rate-limited. Please wait a moment.');
-    if (status === 502 || status === 503)
-      throw new ApiError(status, detail ?? 'The AI service is temporarily unavailable. Please try again.');
+    // Render/Nginx timeout — returns HTML
+    if (ae.code === 'ETIMEDOUT' || status === 524 || status === 408) {
+      throw new ApiError(
+        status,
+        'The request timed out. The server may be starting up — please try again in a moment.',
+      );
+    }
 
-    throw new ApiError(status, detail ?? `Unexpected error (${status}).`);
+    if (status === 400) throw new ApiError(status, detail || 'Bad request.');
+    if (status === 404) throw new ApiError(status, detail || 'Resource not found.');
+    if (status === 413) throw new ApiError(status, detail || 'File is too large. Maximum size is 10 MB.');
+    if (status === 422) throw new ApiError(status, detail || 'Could not process this file.');
+    if (status === 429) throw new ApiError(status, detail || 'The AI service is rate-limited. Please wait a moment.');
+    if (status === 500) throw new ApiError(status, detail || 'Internal server error. Please try again.');
+    if (status === 502) throw new ApiError(status, detail || 'Backend is temporarily unavailable (502). Please try again.');
+    if (status === 503) throw new ApiError(status, detail || 'Backend is starting up. Please wait a moment and try again.');
+
+    throw new ApiError(status, detail || `Unexpected error (${status}).`);
   }
-  throw err;
+  // Non-Axios error (e.g. JSON parse failure)
+  if (err instanceof Error) throw new ApiError(0, err.message);
+  throw new ApiError(0, 'An unexpected error occurred.');
 }
 
 // ─── Document endpoints ──────────────────────────────────────────────────────
 
 /**
- * Upload a file. Backend returns 202 quickly (status = "queued").
- * Actual ingestion runs in the background — poll getDocumentStatus() for progress.
+ * Upload a file.
+ * - Uses a 90s timeout to survive Render cold-starts.
+ * - onProgress reports NETWORK transfer only (0–95%).
+ *   The remaining 5–100% is represented by the backend status stages.
  */
 export async function uploadDocument(
   file: File,
@@ -90,10 +119,12 @@ export async function uploadDocument(
   form.append('file', file);
   try {
     const { data } = await client.post<Document>('/upload', form, {
-      timeout: 60_000,   // generous timeout only for the file transfer itself
+      // Generous timeout: covers cold-start (30–60s) + file transfer
+      timeout: 90_000,
       onUploadProgress: (e: AxiosProgressEvent) => {
-        if (onProgress && e.total) {
-          onProgress(Math.round((e.loaded * 100) / e.total));
+        if (onProgress && e.total && e.total > 0) {
+          // Cap at 95 — the remaining 5% represents "waiting for server response"
+          onProgress(Math.min(Math.round((e.loaded * 100) / e.total), 95));
         }
       },
     });
@@ -103,10 +134,7 @@ export async function uploadDocument(
   }
 }
 
-/**
- * Poll GET /documents/{id}/status to track background ingestion progress.
- * Returns the lightweight DocumentStatusResponse shape.
- */
+/** Poll GET /documents/{id}/status */
 export async function getDocumentStatus(docId: string): Promise<DocumentStatusResponse> {
   try {
     const { data } = await client.get<DocumentStatusResponse>(`/documents/${docId}/status`);
@@ -116,7 +144,7 @@ export async function getDocumentStatus(docId: string): Promise<DocumentStatusRe
   }
 }
 
-/** Fetch all uploaded documents ordered by created_at desc */
+/** List all documents */
 export async function getDocuments(): Promise<Document[]> {
   try {
     const { data } = await client.get<Document[]>('/documents');
@@ -126,7 +154,7 @@ export async function getDocuments(): Promise<Document[]> {
   }
 }
 
-/** Permanently delete a document and its vectors */
+/** Delete a document and its vectors */
 export async function deleteDocument(docId: string): Promise<void> {
   try {
     await client.delete(`/documents/${docId}`);
